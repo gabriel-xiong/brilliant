@@ -1,7 +1,7 @@
 import { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import { onAuthStateChanged, User, signOut } from 'firebase/auth';
 import { auth, firebaseEnabled } from '../firebase';
-import { firebaseSignInWithGoogle, firebaseSignInWithEmail } from '../services/authService';
+import { firebaseSignInWithGoogle, firebaseSignInWithEmail, firebaseSignUpWithEmail } from '../services/authService';
 
 export type AuthUser = {
   uid: string;
@@ -16,6 +16,7 @@ type AuthContextValue = {
   firebaseEnabled: boolean;
   signInWithGoogle: () => Promise<void>;
   signInWithEmail: (email: string, password: string) => Promise<void>;
+  signUpWithEmail: (email: string, password: string) => Promise<void>;
   signOutUser: () => Promise<void>;
 };
 
@@ -55,6 +56,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       firebaseEnabled,
       signInWithGoogle: async () => firebaseSignInWithGoogle(),
       signInWithEmail: async (email: string, password: string) => firebaseSignInWithEmail(email, password),
+      signUpWithEmail: async (email: string, password: string) => firebaseSignUpWithEmail(email, password),
       signOutUser: async () => {
         if (!auth) return;
         return signOut(auth);

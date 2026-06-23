@@ -20,6 +20,30 @@ async function parseLessonSnapshot(lessonId: string, data: any): Promise<Lesson 
   return { ...data, lessonId } as Lesson;
 }
 
+async function maybeRefreshIntroLesson(lessonId: string, lesson: Lesson): Promise<FetchLessonResult | null> {
+  if (lessonId !== introBasicProbabilityLesson.lessonId) return null;
+
+  const savedVersion = lesson.contentVersion ?? 1;
+  if (savedVersion >= introBasicProbabilityLesson.contentVersion) return null;
+
+  if (db) {
+    withTimeout(
+      setDoc(doc(db, 'lessons', lessonId), introBasicProbabilityLesson, { merge: true }),
+      3000,
+      undefined,
+      'maybeRefreshIntroLesson:write'
+    ).catch((error) => {
+      console.warn('Firestore has an older intro lesson; using local upgraded lesson for this session.', error);
+    });
+  }
+
+  return {
+    lesson: introBasicProbabilityLesson,
+    fallbackUsed: true,
+    reason: 'Showing the upgraded local lesson because Firestore still has an older version. Re-run npm run seed:firestore to update the stored lesson.',
+  };
+}
+
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, fallback: T, label: string): Promise<T> {
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
   const timeoutPromise = new Promise<T>((resolve) => {
@@ -54,21 +78,23 @@ export async function fetchLesson(lessonId: string): Promise<FetchLessonResult> 
       );
       if (snapshot && snapshot.exists()) {
         const lesson = await parseLessonSnapshot(lessonId, snapshot.data());
+        if (lesson) {
+          const upgradedIntroLesson = await maybeRefreshIntroLesson(lessonId, lesson);
+          if (upgradedIntroLesson) return upgradedIntroLesson;
+        }
         return { lesson, fallbackUsed: false };
       }
 
       if (lessonId === introBasicProbabilityLesson.lessonId) {
-        try {
-          await setDoc(doc(db, 'lessons', lessonId), introBasicProbabilityLesson);
-          return { lesson: introBasicProbabilityLesson, fallbackUsed: false };
-        } catch (writeError) {
-          console.warn('Failed to create lesson in Firestore, using local lesson fallback.', writeError);
-          return {
-            lesson: introBasicProbabilityLesson,
-            fallbackUsed: true,
-            reason: getFirestoreFallbackReason(writeError, 'Firestore lesson was unavailable, showing the local lesson.'),
-          };
-        }
+        withTimeout(
+          setDoc(doc(db, 'lessons', lessonId), introBasicProbabilityLesson),
+          3000,
+          undefined,
+          'fetchLesson:write'
+        ).catch((writeError) => {
+          console.warn('Failed to create lesson in Firestore, will use local lesson.', writeError);
+        });
+        return { lesson: introBasicProbabilityLesson, fallbackUsed: true, reason: 'Firestore lesson not found; using local lesson.' };
       }
     } catch (error) {
       console.warn('Failed to read lesson from Firestore, falling back to local lesson.', error);
@@ -94,7 +120,16 @@ export async function fetchAllLessons(): Promise<FetchAllLessonsResult> {
       );
       if (snapshot && !snapshot.empty) {
         return {
-          lessons: snapshot.docs.map((docSnap: QueryDocumentSnapshot<Lesson>) => ({ ...docSnap.data(), lessonId: docSnap.id } as Lesson)),
+          lessons: snapshot.docs.map((docSnap: QueryDocumentSnapshot<Lesson>) => {
+            const lesson = { ...docSnap.data(), lessonId: docSnap.id } as Lesson;
+            if (
+              lesson.lessonId === introBasicProbabilityLesson.lessonId &&
+              (lesson.contentVersion ?? 1) < introBasicProbabilityLesson.contentVersion
+            ) {
+              return introBasicProbabilityLesson;
+            }
+            return lesson;
+          }),
           fallbackUsed: false,
         };
       }

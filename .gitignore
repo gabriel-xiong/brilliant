@@ -8,3 +8,6 @@ serviceaccount.json
 
 *.log
 .DS_Store
+
+serviceaccount.json
+serviceAccount*.json

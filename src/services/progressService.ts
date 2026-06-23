@@ -1,4 +1,5 @@
 import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
+import { Lesson } from '../models/lesson';
 import { db } from '../firebase';
 import { isFirestorePermissionError } from './firebaseUtils';
 
@@ -10,17 +11,18 @@ export interface StepProgress {
 
 export interface LessonProgress {
   lessonId: string;
+  contentVersion?: number;
   lastStepIndex: number;
   completed: boolean;
   score: number;
-  masteryStatus: 'not-started' | 'in-progress' | 'mastered';
+  masteryStatus: 'not-started' | 'in-progress' | 'almost-done' | 'completed' | 'mastered';
   stepAttempts: Record<string, StepProgress>;
   updatedAt: string;
 }
 
 export interface MasterySummaryEntry {
   score: number;
-  status: 'not-started' | 'in-progress' | 'mastered';
+  status: 'not-started' | 'in-progress' | 'almost-done' | 'completed' | 'mastered';
   lastUpdated: string;
 }
 
@@ -37,10 +39,28 @@ export interface UserSummary {
 
 const progressStorageKeyPrefix = 'brilliant-progress-';
 
-const todayString = () => new Date().toISOString().slice(0, 10);
+export const localDateString = (date = new Date()) => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
 
-export function loadProgress(lessonId: string): LessonProgress | null {
-  const raw = localStorage.getItem(progressStorageKeyPrefix + lessonId);
+function previousLocalDateString(dateString: string) {
+  const [year, month, day] = dateString.split('-').map(Number);
+  const date = new Date(year, month - 1, day);
+  date.setDate(date.getDate() - 1);
+  return localDateString(date);
+}
+
+function progressLocalKey(lessonId: string, userId?: string) {
+  return userId
+    ? `${progressStorageKeyPrefix}${userId}-${lessonId}`
+    : `${progressStorageKeyPrefix}${lessonId}`;
+}
+
+export function loadProgress(lessonId: string, userId?: string): LessonProgress | null {
+  const raw = localStorage.getItem(progressLocalKey(lessonId, userId));
   if (!raw) return null;
   try {
     return JSON.parse(raw) as LessonProgress;
@@ -49,18 +69,54 @@ export function loadProgress(lessonId: string): LessonProgress | null {
   }
 }
 
-export function saveProgress(progress: LessonProgress) {
-  localStorage.setItem(progressStorageKeyPrefix + progress.lessonId, JSON.stringify(progress));
+export function saveProgress(progress: LessonProgress, userId?: string) {
+  localStorage.setItem(progressLocalKey(progress.lessonId, userId), JSON.stringify(progress));
 }
 
-export function initializeProgress(lessonId: string): LessonProgress {
+export function initializeProgress(lessonId: string, contentVersion?: number): LessonProgress {
   return {
     lessonId,
+    contentVersion,
     lastStepIndex: 0,
     completed: false,
     score: 0,
     masteryStatus: 'not-started',
     stepAttempts: {},
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+export function calculateLessonProgress(
+  lesson: Lesson,
+  stepAttempts: Record<string, StepProgress>,
+  lastStepIndex: number,
+  completed: boolean
+): LessonProgress {
+  const problemSteps = lesson.steps.filter((step) => step.type === 'problem');
+  const correctFirstAttemptCount = problemSteps.filter(
+    (step) => stepAttempts[step.stepId]?.correctFirstAttempt
+  ).length;
+  const firstAttemptAccuracy = problemSteps.length > 0 ? correctFirstAttemptCount / problemSteps.length : 0;
+  const answeredProblemCount = problemSteps.filter((step) => stepAttempts[step.stepId]?.lastResult === 'correct').length;
+  const lessonProgressRatio = Math.max(lastStepIndex / Math.max(lesson.steps.length - 1, 1), answeredProblemCount / Math.max(problemSteps.length, 1));
+  const masteryStatus = completed
+    ? firstAttemptAccuracy >= lesson.masteryCriteria.minFirstAttemptAccuracy
+      ? 'mastered'
+      : 'completed'
+    : lessonProgressRatio >= 0.66
+      ? 'almost-done'
+      : lessonProgressRatio > 0
+        ? 'in-progress'
+        : 'not-started';
+
+  return {
+    lessonId: lesson.lessonId,
+    contentVersion: lesson.contentVersion,
+    lastStepIndex,
+    completed,
+    score: firstAttemptAccuracy,
+    masteryStatus,
+    stepAttempts,
     updatedAt: new Date().toISOString(),
   };
 }
@@ -78,7 +134,7 @@ export async function loadLessonProgress(userId: string, lessonId: string): Prom
     }
   }
 
-  return loadProgress(lessonId);
+  return loadProgress(lessonId, userId);
 }
 
 export function getProgressFallbackReason(error: unknown, defaultReason: string) {
@@ -89,7 +145,7 @@ export function getProgressFallbackReason(error: unknown, defaultReason: string)
 }
 
 export async function saveLessonProgress(userId: string, progress: LessonProgress) {
-  if (db) {
+  if (db && userId) {
     try {
       const progressRef = doc(db, 'users', userId, 'progress', progress.lessonId);
       await setDoc(progressRef, { ...progress, updatedAt: new Date().toISOString() });
@@ -98,7 +154,30 @@ export async function saveLessonProgress(userId: string, progress: LessonProgres
     }
   }
 
-  saveProgress(progress);
+  saveProgress(progress, userId || undefined);
+}
+
+export async function saveMasterySummary(userId: string, progress: LessonProgress) {
+  if (!db || !progress.completed) return;
+
+  try {
+    const userRef = doc(db, 'users', userId);
+    await setDoc(
+      userRef,
+      {
+        masterySummary: {
+          [progress.lessonId]: {
+            score: progress.score,
+            status: progress.masteryStatus,
+            lastUpdated: new Date().toISOString(),
+          },
+        },
+      },
+      { merge: true }
+    );
+  } catch (error) {
+    console.warn('Failed to save mastery summary in Firestore.', error);
+  }
 }
 
 export async function loadUserSummary(userId: string): Promise<UserSummary | null> {
@@ -115,7 +194,7 @@ export async function loadUserSummary(userId: string): Promise<UserSummary | nul
   return null;
 }
 
-export async function updateUserStreak(userId: string, activeDate: string = todayString()): Promise<UserSummary | null> {
+export async function updateUserStreak(userId: string, activeDate: string = localDateString()): Promise<UserSummary | null> {
   if (!db) return null;
 
   const userRef = doc(db, 'users', userId);
@@ -139,9 +218,7 @@ export async function updateUserStreak(userId: string, activeDate: string = toda
       if (previousDate === activeDate) {
         // no change
       } else {
-        const yesterday = new Date(new Date(activeDate).getTime() - 24 * 60 * 60 * 1000)
-          .toISOString()
-          .slice(0, 10);
+        const yesterday = previousLocalDateString(activeDate);
         if (previousDate === yesterday) {
           currentStreak += 1;
         } else {

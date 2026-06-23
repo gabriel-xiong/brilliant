@@ -1,23 +1,79 @@
 import { Routes, Route, Navigate } from 'react-router-dom';
+import { CssBaseline, ThemeProvider, createTheme } from '@mui/material';
 import SignInPage from './routes/SignInPage';
-import HomePage from './routes/HomePage';
 import CoursePathPage from './routes/CoursePathPage';
 import LessonPlayerPage from './routes/LessonPlayerPage';
 import ProfilePage from './routes/ProfilePage';
 import { AuthProvider } from './contexts/AuthContext';
 
+const theme = createTheme({
+  palette: {
+    primary: {
+      main: '#0f6f68',
+      dark: '#084f4a',
+      contrastText: '#fffaf0',
+    },
+    secondary: {
+      main: '#c35f2c',
+      contrastText: '#fffaf0',
+    },
+    background: {
+      default: '#fff8e8',
+      paper: '#fffdf7',
+    },
+    text: {
+      primary: '#1f2430',
+      secondary: '#5d6575',
+    },
+  },
+  typography: {
+    fontFamily: "'Source Sans 3', system-ui, sans-serif",
+    h1: { fontFamily: "'Bricolage Grotesque', 'Source Sans 3', system-ui, sans-serif", fontWeight: 800 },
+    h2: { fontFamily: "'Bricolage Grotesque', 'Source Sans 3', system-ui, sans-serif", fontWeight: 800 },
+    h3: { fontFamily: "'Bricolage Grotesque', 'Source Sans 3', system-ui, sans-serif", fontWeight: 800 },
+    h4: { fontFamily: "'Bricolage Grotesque', 'Source Sans 3', system-ui, sans-serif", fontWeight: 800 },
+    h5: { fontFamily: "'Bricolage Grotesque', 'Source Sans 3', system-ui, sans-serif", fontWeight: 700 },
+    h6: { fontFamily: "'Bricolage Grotesque', 'Source Sans 3', system-ui, sans-serif", fontWeight: 700 },
+    button: { fontWeight: 700, letterSpacing: 0.02 },
+  },
+  shape: {
+    borderRadius: 18,
+  },
+  components: {
+    MuiCard: {
+      styleOverrides: {
+        root: {
+          boxShadow: '0 18px 55px rgba(68, 50, 23, 0.10)',
+        },
+      },
+    },
+    MuiButton: {
+      styleOverrides: {
+        root: {
+          borderRadius: 999,
+          textTransform: 'none',
+          paddingInline: 20,
+        },
+      },
+    },
+  },
+});
+
 function App() {
   return (
-    <AuthProvider>
-      <Routes>
-        <Route path="/signin" element={<SignInPage />} />
-        <Route path="/" element={<HomePage />} />
-        <Route path="/course" element={<CoursePathPage />} />
-        <Route path="/lesson/:lessonId" element={<LessonPlayerPage />} />
-        <Route path="/profile" element={<ProfilePage />} />
-        <Route path="*" element={<Navigate to="/signin" replace />} />
-      </Routes>
-    </AuthProvider>
+    <ThemeProvider theme={theme}>
+      <CssBaseline />
+      <AuthProvider>
+        <Routes>
+          <Route path="/signin" element={<SignInPage />} />
+          <Route path="/" element={<Navigate to="/course" replace />} />
+          <Route path="/course" element={<CoursePathPage />} />
+          <Route path="/lesson/:lessonId" element={<LessonPlayerPage />} />
+          <Route path="/profile" element={<ProfilePage />} />
+          <Route path="*" element={<Navigate to="/signin" replace />} />
+        </Routes>
+      </AuthProvider>
+    </ThemeProvider>
   );
 }
 
