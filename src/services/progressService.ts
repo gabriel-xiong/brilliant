@@ -39,6 +39,98 @@ export interface UserSummary {
 
 const progressStorageKeyPrefix = 'brilliant-progress-';
 
+/**
+ * Anonymous/guest progress is kept in memory for the lifetime of the page only.
+ * It deliberately survives in-session navigation (the module instance is shared
+ * across route changes) but is wiped by a hard refresh (the module is
+ * re-evaluated), so a signed-out reload always starts from the initial state.
+ * Signed-in progress is never stored here — it uses Firestore plus a
+ * user-scoped localStorage cache.
+ */
+const guestProgressStore = new Map<string, LessonProgress>();
+
+/**
+ * Wipe any guest progress so a signed-out session starts clean. Clears the
+ * in-memory session store and removes any *legacy* guest records that older
+ * builds persisted to localStorage. Only keys that exactly match the
+ * non-user-scoped guest format (`<prefix><lessonId>`) are removed, so a
+ * returning signed-in user's user-scoped cache is never touched. Safe to call
+ * on startup once auth has resolved to signed-out.
+ */
+export function clearGuestProgress(): void {
+  guestProgressStore.clear();
+
+  if (typeof localStorage === 'undefined') return;
+
+  const keysToRemove: string[] = [];
+  for (let i = 0; i < localStorage.length; i += 1) {
+    const key = localStorage.key(i);
+    if (!key || !key.startsWith(progressStorageKeyPrefix)) continue;
+    const raw = localStorage.getItem(key);
+    if (!raw) continue;
+    try {
+      const parsed = JSON.parse(raw) as LessonProgress;
+      // A guest key is exactly `<prefix><lessonId>`; a user key carries the uid
+      // as an extra segment, so this comparison never matches a user record.
+      if (parsed?.lessonId && key === `${progressStorageKeyPrefix}${parsed.lessonId}`) {
+        keysToRemove.push(key);
+      }
+    } catch {
+      // Unparseable value: leave it alone rather than risk removing user data.
+    }
+  }
+
+  keysToRemove.forEach((key) => localStorage.removeItem(key));
+}
+
+type MasteryStatus = LessonProgress['masteryStatus'];
+
+/**
+ * Monotonic ordering for mastery progression. A higher rank must never be
+ * downgraded by a later, lower-scoring attempt. `locked` is included for
+ * completeness even though it is not a persisted `masteryStatus` value.
+ */
+const masteryStatusRank: Record<string, number> = {
+  locked: -1,
+  'not-started': 0,
+  'in-progress': 1,
+  'almost-done': 2,
+  completed: 3,
+  mastered: 4,
+};
+
+function masteryRank(status: string | null | undefined): number {
+  if (!status) return 0;
+  return masteryStatusRank[status] ?? 0;
+}
+
+/**
+ * Returns whichever status sits higher on the mastery ladder, so callers can
+ * keep the best status a learner has ever reached. Tolerant of unknown/legacy
+ * strings (treated as the floor) to avoid accidentally clobbering real values.
+ */
+export function maxMasteryStatus(a: MasteryStatus, b: MasteryStatus): MasteryStatus {
+  return masteryRank(a) >= masteryRank(b) ? a : b;
+}
+
+/**
+ * Merge a freshly computed progress record with the learner's previously stored
+ * record so mastery is sticky: status can only ever move up the ladder, the
+ * completed flag latches on, and the recorded score keeps its peak value.
+ */
+export function applyStickyMastery(
+  next: LessonProgress,
+  previous: LessonProgress | null | undefined
+): LessonProgress {
+  if (!previous) return next;
+  return {
+    ...next,
+    masteryStatus: maxMasteryStatus(next.masteryStatus, previous.masteryStatus),
+    completed: next.completed || previous.completed,
+    score: Math.max(next.score ?? 0, previous.score ?? 0),
+  };
+}
+
 export const localDateString = (date = new Date()) => {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, '0');
@@ -60,6 +152,11 @@ function progressLocalKey(lessonId: string, userId?: string) {
 }
 
 export function loadProgress(lessonId: string, userId?: string): LessonProgress | null {
+  // Guests read from the in-memory session store so nothing persists across a
+  // reload; signed-in learners use their user-scoped localStorage cache.
+  if (!userId) {
+    return guestProgressStore.get(lessonId) ?? null;
+  }
   const raw = localStorage.getItem(progressLocalKey(lessonId, userId));
   if (!raw) return null;
   try {
@@ -70,6 +167,12 @@ export function loadProgress(lessonId: string, userId?: string): LessonProgress 
 }
 
 export function saveProgress(progress: LessonProgress, userId?: string) {
+  // Guest progress is session-only (in memory); signed-in progress is cached in
+  // localStorage alongside the Firestore record.
+  if (!userId) {
+    guestProgressStore.set(progress.lessonId, progress);
+    return;
+  }
   localStorage.setItem(progressLocalKey(progress.lessonId, userId), JSON.stringify(progress));
 }
 
@@ -90,7 +193,8 @@ export function calculateLessonProgress(
   lesson: Lesson,
   stepAttempts: Record<string, StepProgress>,
   lastStepIndex: number,
-  completed: boolean
+  completed: boolean,
+  previousStatus?: MasteryStatus
 ): LessonProgress {
   const problemSteps = lesson.steps.filter((step) => step.type === 'problem');
   const correctFirstAttemptCount = problemSteps.filter(
@@ -99,7 +203,7 @@ export function calculateLessonProgress(
   const firstAttemptAccuracy = problemSteps.length > 0 ? correctFirstAttemptCount / problemSteps.length : 0;
   const answeredProblemCount = problemSteps.filter((step) => stepAttempts[step.stepId]?.lastResult === 'correct').length;
   const lessonProgressRatio = Math.max(lastStepIndex / Math.max(lesson.steps.length - 1, 1), answeredProblemCount / Math.max(problemSteps.length, 1));
-  const masteryStatus = completed
+  const computedStatus: MasteryStatus = completed
     ? firstAttemptAccuracy >= lesson.masteryCriteria.minFirstAttemptAccuracy
       ? 'mastered'
       : 'completed'
@@ -108,6 +212,10 @@ export function calculateLessonProgress(
       : lessonProgressRatio > 0
         ? 'in-progress'
         : 'not-started';
+  // Mastery is sticky: never let a later review downgrade an earned status.
+  const masteryStatus = previousStatus
+    ? maxMasteryStatus(computedStatus, previousStatus)
+    : computedStatus;
 
   return {
     lessonId: lesson.lessonId,
@@ -145,16 +253,37 @@ export function getProgressFallbackReason(error: unknown, defaultReason: string)
 }
 
 export async function saveLessonProgress(userId: string, progress: LessonProgress) {
+  // Establish the learner's previously stored high-water mark so a replay can
+  // never persist a downgraded mastery status. Local storage is always kept in
+  // sync; for signed-in learners we also consult the Firestore record so a
+  // mastery earned on another device is respected.
+  let existing: LessonProgress | null = loadProgress(progress.lessonId, userId || undefined);
+
   if (db && userId) {
     try {
       const progressRef = doc(db, 'users', userId, 'progress', progress.lessonId);
-      await setDoc(progressRef, { ...progress, updatedAt: new Date().toISOString() });
+      const snapshot = await getDoc(progressRef);
+      if (snapshot.exists()) {
+        const remote = snapshot.data() as LessonProgress;
+        existing = existing ? applyStickyMastery(existing, remote) : remote;
+      }
+    } catch (error) {
+      console.warn('Failed to read existing lesson progress before saving, using local copy.', error);
+    }
+  }
+
+  const sticky = applyStickyMastery(progress, existing);
+
+  if (db && userId) {
+    try {
+      const progressRef = doc(db, 'users', userId, 'progress', sticky.lessonId);
+      await setDoc(progressRef, { ...sticky, updatedAt: new Date().toISOString() });
     } catch (error) {
       console.warn('Failed to save lesson progress to Firestore, saving locally instead.', error);
     }
   }
 
-  saveProgress(progress, userId || undefined);
+  saveProgress(sticky, userId || undefined);
 }
 
 export async function saveMasterySummary(userId: string, progress: LessonProgress) {
@@ -162,13 +291,27 @@ export async function saveMasterySummary(userId: string, progress: LessonProgres
 
   try {
     const userRef = doc(db, 'users', userId);
+
+    // Keep the course-map summary sticky too: clamp against any existing entry
+    // so reviewing a mastered lesson can never lower its course-map status.
+    let status = progress.masteryStatus;
+    let score = progress.score;
+    const snapshot = await getDoc(userRef);
+    if (snapshot.exists()) {
+      const existing = (snapshot.data() as UserSummary).masterySummary?.[progress.lessonId];
+      if (existing) {
+        status = maxMasteryStatus(progress.masteryStatus, existing.status);
+        score = Math.max(progress.score ?? 0, existing.score ?? 0);
+      }
+    }
+
     await setDoc(
       userRef,
       {
         masterySummary: {
           [progress.lessonId]: {
-            score: progress.score,
-            status: progress.masteryStatus,
+            score,
+            status,
             lastUpdated: new Date().toISOString(),
           },
         },

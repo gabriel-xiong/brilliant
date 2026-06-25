@@ -1,16 +1,90 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+    function isOwner(userId) {
+      return request.auth != null && request.auth.uid == userId;
+    }
+
+    function isNullableString(value, maxLength) {
+      return value == null || (value is string && value.size() <= maxLength);
+    }
+
+    function isLocalDateString(value) {
+      return value is string && value.matches('^\\d{4}-\\d{2}-\\d{2}$');
+    }
+
+    function isMasteryStatus(value) {
+      return value in ['not-started', 'in-progress', 'almost-done', 'completed', 'mastered'];
+    }
+
+    function isValidUserSummary(data) {
+      return data.keys().hasOnly([
+          'displayName',
+          'email',
+          'createdAt',
+          'lastLoginAt',
+          'lastActiveDate',
+          'currentStreak',
+          'longestStreak',
+          'masterySummary'
+        ])
+        && (!('displayName' in data) || isNullableString(data.displayName, 120))
+        && (!('email' in data) || isNullableString(data.email, 254))
+        && (!('createdAt' in data) || data.createdAt is timestamp)
+        && (!('lastLoginAt' in data) || data.lastLoginAt is timestamp)
+        && data.lastActiveDate is string
+        && isLocalDateString(data.lastActiveDate)
+        && data.currentStreak is int
+        && data.currentStreak >= 0
+        && data.currentStreak <= 10000
+        && data.longestStreak is int
+        && data.longestStreak >= 0
+        && data.longestStreak <= 10000
+        && data.masterySummary is map
+        && data.masterySummary.keys().size() <= 50;
+    }
+
+    function isValidProgress(data, lessonId) {
+      return data.keys().hasOnly([
+          'lessonId',
+          'contentVersion',
+          'lastStepIndex',
+          'completed',
+          'score',
+          'masteryStatus',
+          'stepAttempts',
+          'updatedAt'
+        ])
+        && data.lessonId == lessonId
+        && (!('contentVersion' in data) || (data.contentVersion is int && data.contentVersion >= 1 && data.contentVersion <= 1000))
+        && data.lastStepIndex is int
+        && data.lastStepIndex >= 0
+        && data.lastStepIndex <= 100
+        && data.completed is bool
+        && data.score is number
+        && data.score >= 0
+        && data.score <= 1
+        && isMasteryStatus(data.masteryStatus)
+        && data.stepAttempts is map
+        && data.stepAttempts.keys().size() <= 100
+        && data.updatedAt is string
+        && data.updatedAt.size() <= 40;
+    }
+
     match /lessons/{lessonId} {
       allow read: if true;
-      allow write: if request.auth != null;
+      allow write: if false;
     }
 
     match /users/{userId} {
-      allow read, write: if request.auth != null && request.auth.uid == userId;
+      allow read: if isOwner(userId);
+      allow create, update: if isOwner(userId) && isValidUserSummary(request.resource.data);
+      allow delete: if false;
 
       match /progress/{lessonId} {
-        allow read, write: if request.auth != null && request.auth.uid == userId;
+        allow read: if isOwner(userId);
+        allow create, update: if isOwner(userId) && isValidProgress(request.resource.data, lessonId);
+        allow delete: if false;
       }
     }
   }

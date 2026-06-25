@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import { onAuthStateChanged, User, signOut } from 'firebase/auth';
 import { auth, firebaseEnabled } from '../firebase';
 import { firebaseSignInWithGoogle, firebaseSignInWithEmail, firebaseSignUpWithEmail } from '../services/authService';
+import { clearGuestProgress } from '../services/progressService';
 
 export type AuthUser = {
   uid: string;
@@ -37,12 +38,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (!firebaseEnabled || !auth) {
+      // Without Firebase everyone is a guest: ensure no stale guest cache from a
+      // previous build survives this reload.
+      clearGuestProgress();
       setLoading(false);
       return;
     }
 
     const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
-      setUser(firebaseUser ? mapFirebaseUser(firebaseUser) : null);
+      // `onAuthStateChanged` fires once auth has resolved, with the restored
+      // user already populated from persistence. A `null` here therefore means
+      // "resolved to signed-out" — not the transient pre-resolution null — so
+      // it is safe to wipe guest progress without clobbering a returning
+      // signed-in user (whose data lives in Firestore + a user-scoped cache).
+      if (firebaseUser) {
+        setUser(mapFirebaseUser(firebaseUser));
+      } else {
+        clearGuestProgress();
+        setUser(null);
+      }
       setLoading(false);
     });
 

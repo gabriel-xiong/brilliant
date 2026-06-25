@@ -12,6 +12,10 @@ interface WheelHand {
   value: number;
   angle: number;
   length: number;
+  // Per-hand sweep timing so a batch of markers settles out of sync instead of
+  // snapping in eerie unison. Cosmetic only — does not affect the outcome.
+  spinMs: number;
+  spinDelayMs: number;
 }
 
 const runSizes = [6, 120, 600];
@@ -29,11 +33,15 @@ const previewHands: WheelHand[] = [1, 2, 3, 4, 5, 6].map((value, index) => ({
   value,
   angle: faceAngles[value],
   length: 34 + index * 3,
+  spinMs: 520,
+  spinDelayMs: 0,
 }));
 
-export function DiceRollSimulator({ target = '4' }: DiceRollSimulatorProps) {
+export function DiceRollSimulator(_props: DiceRollSimulatorProps) {
   const [results, setResults] = useState<number[]>([]);
-  const [targetFace, setTargetFace] = useState(Number(target) || 4);
+  // Default to the leftmost dropdown option (Face 1) and the leftmost spin
+  // preset (6) regardless of the lesson-provided target.
+  const [targetFace, setTargetFace] = useState(1);
   const [hands, setHands] = useState<WheelHand[]>(previewHands);
   const [isRunning, setIsRunning] = useState(false);
   const [activeRunSize, setActiveRunSize] = useState<number | null>(null);
@@ -63,11 +71,21 @@ export function DiceRollSimulator({ target = '4' }: DiceRollSimulatorProps) {
   const addSpinChunk = (chunkSize: number) => {
     const nextHands = Array.from({ length: chunkSize }, () => {
       const value = Math.floor(Math.random() * 6) + 1;
+      // Each face owns a 60° sector centered on faceAngles[value]. Drop the
+      // marker at a uniformly random angle spanning the full sector (with a
+      // tiny inset to avoid landing on sector seams) instead of the old fixed
+      // center ± a small jitter. This keeps the marker faithful to the actual
+      // outcome (correct face/sector) while scattering markers across the whole
+      // wheel instead of clustering them at six fixed offsets.
+      const sectorCenter = faceAngles[value];
+      const angle = sectorCenter - 28 + Math.random() * 56;
       return {
         id: handIdRef.current++,
         value,
-        angle: faceAngles[value] + Math.floor(Math.random() * 34 - 17),
+        angle,
         length: 38 + Math.floor(Math.random() * 48),
+        spinMs: 380 + Math.floor(Math.random() * 420), // 380–800ms
+        spinDelayMs: Math.floor(Math.random() * 180), // 0–180ms
       };
     }) satisfies WheelHand[];
 
@@ -115,13 +133,6 @@ export function DiceRollSimulator({ target = '4' }: DiceRollSimulatorProps) {
   return (
     <Card variant="outlined" sx={{ mt: 2 }}>
       <CardContent sx={{ p: { xs: 2.5, md: 3 } }}>
-        <Typography variant="h5" gutterBottom>
-          What are we testing?
-        </Typography>
-        <Typography variant="body1" color="text.secondary" sx={{ mb: 2, maxWidth: '96ch' }}>
-          Pick one face to watch, then compare observed spins with the expected 16.7%. Short runs can wobble, but larger runs tend to drift closer to one hit out of every six spins.
-        </Typography>
-
         <Box
           sx={{
             display: 'grid',
@@ -169,31 +180,42 @@ export function DiceRollSimulator({ target = '4' }: DiceRollSimulatorProps) {
                 {face}
               </Box>
             ))}
-            {hands.map((hand) => (
-              <Box
-                key={hand.id}
-                sx={{
-                  position: 'absolute',
-                  left: '50%',
-                  top: '50%',
-                  width: 3,
-                  height: `${hand.length}%`,
-                  transformOrigin: '50% 0%',
-                  transform: `rotate(${hand.angle}deg) translateY(-2px)`,
-                  bgcolor: hand.value === targetFace ? 'primary.dark' : 'rgba(31,36,48,0.38)',
-                  borderRadius: 999,
-                  opacity: hand.id < 0 ? 0.32 : hand.value === targetFace ? 0.95 : 0.55,
-                  animation: hand.id < 0 ? 'none' : 'handSweep 520ms cubic-bezier(0.22, 1, 0.36, 1)',
-                  '@keyframes handSweep': {
-                    '0%': { transform: `rotate(${hand.angle - 190}deg) translateY(-2px)`, opacity: 0 },
-                    '100%': { opacity: hand.value === targetFace ? 0.95 : 0.55 },
-                  },
-                  '@media (prefers-reduced-motion: reduce)': {
-                    animation: 'none',
-                  },
-                }}
-              />
-            ))}
+            {hands.map((hand) => {
+              const restOpacity = hand.value === targetFace ? 0.95 : 0.55;
+              // Unique keyframe name per hand: each sweep starts from this hand's
+              // own angle, so a shared name would let one definition clobber the
+              // rest. The id keeps it distinct (negatives are preview markers).
+              const sweepKey = `handSweep_${hand.id < 0 ? `p${-hand.id}` : hand.id}`;
+              return (
+                <Box
+                  key={hand.id}
+                  sx={{
+                    position: 'absolute',
+                    left: '50%',
+                    top: '50%',
+                    width: 3,
+                    height: `${hand.length}%`,
+                    transformOrigin: '50% 0%',
+                    transform: `rotate(${hand.angle}deg) translateY(-2px)`,
+                    bgcolor: hand.value === targetFace ? 'primary.dark' : 'rgba(31,36,48,0.38)',
+                    borderRadius: 999,
+                    opacity: hand.id < 0 ? 0.32 : restOpacity,
+                    willChange: 'transform',
+                    animation:
+                      hand.id < 0
+                        ? 'none'
+                        : `${sweepKey} ${hand.spinMs}ms cubic-bezier(0.22, 1, 0.36, 1) ${hand.spinDelayMs}ms both`,
+                    [`@keyframes ${sweepKey}`]: {
+                      '0%': { transform: `rotate(${hand.angle - 190}deg) translateY(-2px)`, opacity: 0 },
+                      '100%': { transform: `rotate(${hand.angle}deg) translateY(-2px)`, opacity: restOpacity },
+                    },
+                    '@media (prefers-reduced-motion: reduce)': {
+                      animation: 'none',
+                    },
+                  }}
+                />
+              );
+            })}
             <Box
               sx={{
                 position: 'absolute',
@@ -211,7 +233,7 @@ export function DiceRollSimulator({ target = '4' }: DiceRollSimulatorProps) {
           </Box>
 
           <Box>
-            <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap alignItems="center" sx={{ mb: 2 }}>
+            <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap alignItems="center" sx={{ mb: 1.5 }}>
               <TextField
                 select
                 size="small"
@@ -227,6 +249,8 @@ export function DiceRollSimulator({ target = '4' }: DiceRollSimulatorProps) {
                   </MenuItem>
                 ))}
               </TextField>
+            </Stack>
+            <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap alignItems="center" sx={{ mb: 2 }}>
               <TextField
                 size="small"
                 label="Number of spins"

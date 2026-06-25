@@ -1,5 +1,6 @@
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { CssBaseline, ThemeProvider, createTheme } from '@mui/material';
+import LandingPage from './routes/LandingPage';
 import SignInPage from './routes/SignInPage';
 import CoursePathPage from './routes/CoursePathPage';
 import LessonPlayerPage from './routes/LessonPlayerPage';
@@ -65,12 +66,12 @@ function App() {
       <CssBaseline />
       <AuthProvider>
         <Routes>
+          <Route path="/" element={<LandingPage />} />
           <Route path="/signin" element={<SignInPage />} />
-          <Route path="/" element={<Navigate to="/course" replace />} />
           <Route path="/course" element={<CoursePathPage />} />
           <Route path="/lesson/:lessonId" element={<LessonPlayerPage />} />
           <Route path="/profile" element={<ProfilePage />} />
-          <Route path="*" element={<Navigate to="/signin" replace />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </AuthProvider>
     </ThemeProvider>

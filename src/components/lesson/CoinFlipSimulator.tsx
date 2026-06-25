@@ -5,6 +5,12 @@ import { FrequencyChart } from './FrequencyChart';
 interface CoinFlipSimulatorProps {
   rolls: number;
   target?: string;
+  /**
+   * Simplified first-encounter mode: a single Flip control, a running tally,
+   * and P = heads/total shown only as a stacked fraction. No expected-vs-
+   * observed comparison, difference chip, or frequency chart.
+   */
+  simplified?: boolean;
 }
 
 type CoinResult = 'Heads' | 'Tails';
@@ -15,9 +21,36 @@ interface AnimatedCoin {
 }
 
 const runSizes = [10, 100, 500];
-const previewCoins: CoinResult[] = Array.from({ length: 48 }, (_, index) => (index % 2 === 0 ? 'Heads' : 'Tails'));
+const previewCoins: CoinResult[] = Array.from({ length: 10 }, (_, index) => (index % 2 === 0 ? 'Heads' : 'Tails'));
 
-export function CoinFlipSimulator({ rolls, target = 'Heads' }: CoinFlipSimulatorProps) {
+/** Compact stacked fraction (numerator over a rule over denominator). */
+function TallyFraction({ numerator, denominator }: { numerator: number; denominator: number }) {
+  return (
+    <Box
+      component="span"
+      className="numeric"
+      aria-label={`${numerator} over ${denominator}`}
+      sx={{
+        display: 'inline-grid',
+        gridTemplateRows: 'auto auto',
+        alignItems: 'center',
+        justifyItems: 'center',
+        lineHeight: 1.05,
+        fontWeight: 900,
+        fontSize: '2rem',
+      }}
+    >
+      <Box component="span" sx={{ px: 1, pb: 0.3, borderBottom: '3px solid currentColor', minWidth: 36, textAlign: 'center' }}>
+        {numerator}
+      </Box>
+      <Box component="span" sx={{ px: 1, pt: 0.3, minWidth: 36, textAlign: 'center' }}>
+        {denominator}
+      </Box>
+    </Box>
+  );
+}
+
+export function CoinFlipSimulator({ rolls, target = 'Heads', simplified = false }: CoinFlipSimulatorProps) {
   const [results, setResults] = useState<CoinResult[]>([]);
   const [visibleCoins, setVisibleCoins] = useState<AnimatedCoin[]>([]);
   const [isRunning, setIsRunning] = useState(false);
@@ -46,6 +79,17 @@ export function CoinFlipSimulator({ rolls, target = 'Heads' }: CoinFlipSimulator
   const displayedCoins = visibleCoins.length > 0
     ? visibleCoins
     : previewCoins.map((result, index) => ({ id: -index - 1, result }));
+
+  // Responsive coin sizing: as the count grows we shrink each glyph and switch
+  // to a compact dot grid so the whole run stays visible without overflowing.
+  const coinCount = displayedCoins.length;
+  const coinLayout = coinCount > 400
+    ? { cell: 11, fontSize: 0, gap: 0.35, showLabel: false, animate: false }
+    : coinCount > 180
+      ? { cell: 15, fontSize: 0, gap: 0.4, showLabel: false, animate: false }
+      : coinCount > 80
+        ? { cell: 22, fontSize: 0.6, gap: 0.5, showLabel: true, animate: false }
+        : { cell: 30, fontSize: 0.72, gap: 0.75, showLabel: true, animate: true };
   const targetCount = target === 'Heads' ? counts.heads : counts.tails;
   const experimentalProbability = results.length > 0 ? targetCount / results.length : 0;
   const experimentalPercent = Math.round(experimentalProbability * 100);
@@ -59,7 +103,9 @@ export function CoinFlipSimulator({ rolls, target = 'Heads' }: CoinFlipSimulator
     })) satisfies AnimatedCoin[];
 
     setResults((current) => [...current, ...nextCoins.map((coin) => coin.result)]);
-    setVisibleCoins((current) => [...nextCoins, ...current].slice(0, 72));
+    // Show every coin from the run (no cap). Newest coins are prepended; the
+    // display below shrinks the glyphs as the count grows so they still fit.
+    setVisibleCoins((current) => [...nextCoins, ...current]);
   };
 
   const runFlips = (totalFlips: number) => {
@@ -99,29 +145,133 @@ export function CoinFlipSimulator({ rolls, target = 'Heads' }: CoinFlipSimulator
   const parsedCustomRunSize = Number(customRunSize);
   const validCustomRunSize = Number.isInteger(parsedCustomRunSize) && parsedCustomRunSize > 0 && parsedCustomRunSize <= 1000;
 
+  if (simplified) {
+    return (
+      <Card variant="outlined" sx={{ mt: 2 }}>
+        <CardContent sx={{ p: { xs: 2, md: 2.5 } }}>
+          <Stack direction="row" spacing={1} sx={{ mb: 2 }}>
+            <Button
+              variant="contained"
+              onClick={() => addFlipChunk(1)}
+              aria-label="Flip the coin once"
+              sx={{ height: 40, px: 3, boxShadow: 2 }}
+            >
+              Flip
+            </Button>
+            <Button variant="text" onClick={reset} disabled={results.length === 0}>
+              Reset
+            </Button>
+          </Stack>
+
+          <Box
+            aria-label={`Coin flips so far: ${counts.heads} heads, ${counts.tails} tails`}
+            sx={{
+              minHeight: 72,
+              maxHeight: 220,
+              p: 1.5,
+              mb: 2,
+              borderRadius: 3,
+              bgcolor: 'action.hover',
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fill, minmax(30px, 1fr))',
+              gap: 0.75,
+              alignContent: 'flex-start',
+              alignItems: 'center',
+              overflowY: 'auto',
+            }}
+          >
+            {displayedCoins.map((coin) => (
+              <Box
+                key={coin.id}
+                sx={{
+                  width: 30,
+                  height: 30,
+                  mx: 'auto',
+                  borderRadius: '50%',
+                  display: 'grid',
+                  placeItems: 'center',
+                  fontWeight: 800,
+                  fontSize: '0.72rem',
+                  fontFamily: "'Source Sans 3', system-ui, sans-serif",
+                  color: coin.result === 'Heads' ? 'primary.contrastText' : 'text.primary',
+                  bgcolor: coin.result === 'Heads' ? 'primary.main' : '#fffaf0',
+                  border: '1px solid',
+                  borderColor: coin.result === 'Heads' ? 'primary.dark' : 'divider',
+                  boxShadow: coin.id < 0 ? 0 : 2,
+                  opacity: coin.id < 0 ? 0.45 : 1,
+                  animation: coin.id < 0 ? 'none' : 'coinFlipSimple 420ms cubic-bezier(0.22, 1, 0.36, 1)',
+                  '@keyframes coinFlipSimple': {
+                    '0%': { transform: 'rotateY(90deg) translateY(-8px)', opacity: 0 },
+                    '100%': { transform: 'rotateY(0deg) translateY(0)', opacity: 1 },
+                  },
+                  '@media (prefers-reduced-motion: reduce)': { animation: 'none' },
+                }}
+              >
+                {coin.result === 'Heads' ? 'H' : 'T'}
+              </Box>
+            ))}
+          </Box>
+
+          <Stack
+            direction="row"
+            spacing={{ xs: 2, sm: 4 }}
+            alignItems="center"
+            flexWrap="wrap"
+            useFlexGap
+            sx={{ rowGap: 1.5 }}
+          >
+            <Stack direction="row" spacing={2}>
+              <Box>
+                <Typography variant="caption" color="text.secondary" sx={{ textTransform: 'uppercase', letterSpacing: 0.9 }}>
+                  Heads
+                </Typography>
+                <Typography variant="h4" className="numeric" sx={{ fontWeight: 900, lineHeight: 1 }}>
+                  {counts.heads}
+                </Typography>
+              </Box>
+              <Box>
+                <Typography variant="caption" color="text.secondary" sx={{ textTransform: 'uppercase', letterSpacing: 0.9 }}>
+                  Total
+                </Typography>
+                <Typography variant="h4" className="numeric" sx={{ fontWeight: 900, lineHeight: 1 }}>
+                  {results.length}
+                </Typography>
+              </Box>
+            </Stack>
+            <Stack direction="row" spacing={1} alignItems="center">
+              <Box component="span" className="numeric" sx={{ fontWeight: 900, fontSize: '1.2rem' }}>
+                P(heads) =
+              </Box>
+              {results.length > 0 ? (
+                <TallyFraction numerator={counts.heads} denominator={results.length} />
+              ) : (
+                <Typography variant="body1" color="text.secondary">
+                  flip to begin
+                </Typography>
+              )}
+            </Stack>
+          </Stack>
+        </CardContent>
+      </Card>
+    );
+  }
+
   return (
     <Card variant="outlined" sx={{ mt: 2 }}>
       <CardContent sx={{ p: { xs: 2, md: 2.5 } }}>
-        <Typography variant="h6" gutterBottom>
-          What are we testing?
-        </Typography>
-        <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5, fontSize: '1rem' }}>
-          Compare observed heads with the expected 50%. Small runs wobble; bigger runs usually settle closer.
-        </Typography>
-
         <Box
           sx={{
             display: 'grid',
             gridTemplateColumns: {
               xs: '1fr',
-              md: '1fr auto auto',
+              md: '1fr auto',
             },
             gap: 1,
             alignItems: 'center',
             mb: 2,
           }}
         >
-          <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="nowrap">
+          <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap>
             <TextField
               size="small"
               label="Number of flips"
@@ -155,50 +305,58 @@ export function CoinFlipSimulator({ rolls, target = 'Heads' }: CoinFlipSimulator
                 {size}
               </Button>
             ))}
+            <Button
+              variant="contained"
+              onClick={() => runFlips(parsedCustomRunSize)}
+              disabled={isRunning || !validCustomRunSize}
+              aria-label="Flip the chosen number of coins"
+              sx={{ height: 38, px: 3, minWidth: 96, ml: 0.25, boxShadow: 2 }}
+            >
+              Flip
+            </Button>
           </Stack>
-          <Button variant="contained" onClick={() => runFlips(parsedCustomRunSize)} disabled={isRunning || !validCustomRunSize} sx={{ height: 42, px: 3, minWidth: 96 }}>
-            Flip
-          </Button>
-          <Button variant="text" onClick={reset} disabled={results.length === 0 && !isRunning}>
+          <Button variant="text" onClick={reset} disabled={results.length === 0 && !isRunning} sx={{ justifySelf: { xs: 'start', md: 'end' } }}>
             Reset
           </Button>
         </Box>
 
         <Box
-          aria-label="Animated coin flips"
+          aria-label={`Coin flips so far: ${counts.heads} heads, ${counts.tails} tails`}
           sx={{
-            minHeight: 136,
+            minHeight: visibleCoins.length > 0 ? 136 : 72,
+            maxHeight: 360,
             p: 1.5,
             mb: 1.5,
             borderRadius: 3,
             bgcolor: 'action.hover',
             display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fill, minmax(30px, 1fr))',
-            gap: 0.75,
+            gridTemplateColumns: `repeat(auto-fill, minmax(${coinLayout.cell}px, 1fr))`,
+            gap: coinLayout.gap,
+            alignContent: 'flex-start',
             alignItems: 'center',
-            overflow: 'hidden',
+            overflowY: 'auto',
           }}
         >
           {displayedCoins.map((coin) => (
               <Box
                 key={coin.id}
                 sx={{
-                  width: 30,
-                  height: 30,
+                  width: coinLayout.cell,
+                  height: coinLayout.cell,
                   mx: 'auto',
                   borderRadius: '50%',
                   display: 'grid',
                   placeItems: 'center',
                   fontWeight: 800,
-                  fontSize: '0.72rem',
+                  fontSize: coinLayout.fontSize ? `${coinLayout.fontSize}rem` : 0,
                   fontFamily: "'Source Sans 3', system-ui, sans-serif",
                   color: coin.result === 'Heads' ? 'primary.contrastText' : 'text.primary',
                   bgcolor: coin.result === 'Heads' ? 'primary.main' : '#fffaf0',
                   border: '1px solid',
                   borderColor: coin.result === 'Heads' ? 'primary.dark' : 'divider',
-                  boxShadow: coin.id < 0 ? 0 : 2,
+                  boxShadow: coin.id < 0 || !coinLayout.showLabel ? 0 : 2,
                   opacity: coin.id < 0 ? 0.45 : 1,
-                  animation: coin.id < 0 ? 'none' : 'coinFlip 420ms cubic-bezier(0.22, 1, 0.36, 1)',
+                  animation: coin.id < 0 || !coinLayout.animate ? 'none' : 'coinFlip 420ms cubic-bezier(0.22, 1, 0.36, 1)',
                   transformStyle: 'preserve-3d',
                   '@keyframes coinFlip': {
                     '0%': { transform: 'rotateY(90deg) translateY(-8px)', opacity: 0 },
@@ -209,7 +367,7 @@ export function CoinFlipSimulator({ rolls, target = 'Heads' }: CoinFlipSimulator
                   },
                 }}
               >
-                {coin.result === 'Heads' ? 'H' : 'T'}
+                {coinLayout.showLabel ? (coin.result === 'Heads' ? 'H' : 'T') : ''}
               </Box>
           ))}
         </Box>
