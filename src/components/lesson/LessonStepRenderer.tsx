@@ -1,16 +1,16 @@
-import { Box, Button, Card, CardContent, Chip, FormControlLabel, Radio, RadioGroup, Stack, TextField, Typography } from '@mui/material';
-import { memo, useEffect, useState } from 'react';
+import { Box, Button, Card, CardContent, Chip, CircularProgress, FormControlLabel, Radio, RadioGroup, Stack, TextField, Typography } from '@mui/material';
+import { memo, useEffect, useRef, useState, type ReactNode } from 'react';
 import { useParams } from 'react-router-dom';
 import { motion, useReducedMotion } from 'framer-motion';
 import { EmbeddedDemo, LessonStep, ProblemChoice, ProblemStep, QuestionStage } from '../../models/lesson';
 import type { QuestionView } from '../../hooks/useLessonState';
-import { parseSortAnswer, serializeOrderAnswer } from '../../services/answerCheck';
+import { parseOrderAnswer, parseSortAnswer, serializeOrderAnswer, serializeSortAnswer } from '../../services/answerCheck';
 import { OrderInteraction, SortInteraction, scrambleOrderIds } from './SortOrderInteraction';
 import { ArcadeRingsLab } from './ArcadeRingsLab';
 import { BayesFrequencyLab, BayesScreeningSliderLab } from './BayesFrequencyLab';
 import { conceptsForLessonId } from '../../services/ai/conceptSchemas';
 import type { ConceptId } from '../../services/ai/types';
-import { aiExplainConceptAnother, aiExplainWrongAnswer, conceptHint, isAIEnabled } from '../../services/ai/aiService';
+import { aiExplainConceptAnother, aiExplainWrongAnswer, isAIEnabled, type WrongAnswerKind } from '../../services/ai/aiService';
 import { AIAssistPanel } from './AIAssistPanel';
 import { CoinFlipSimulator } from './CoinFlipSimulator';
 import { DiceRollSimulator } from './DiceRollSimulator';
@@ -32,9 +32,13 @@ import {
 
 const defaultQuestionView: QuestionView = {
   revealedHints: 0,
+  unsuccessfulAttempts: 0,
+  strongestHintUsed: false,
   activeStageIndex: 0,
   resolvedStages: [],
   revealedStages: [],
+  stageUnsuccessfulAttempts: [],
+  stageStrongestHintUsed: [],
 };
 
 /**
@@ -62,6 +66,34 @@ function initialDraftForStep(step: LessonStep, selectedChoice: string | null): s
   return '';
 }
 
+function labelForItem(items: { id: string; label: string }[], itemId: string): string {
+  return items.find((item) => item.id === itemId)?.label ?? itemId;
+}
+
+function labelForBucket(buckets: { id: string; label: string }[], bucketId: string): string {
+  return buckets.find((bucket) => bucket.id === bucketId)?.label ?? bucketId;
+}
+
+function describeSortAnswer(
+  raw: string,
+  items: { id: string; label: string }[],
+  buckets: { id: string; label: string }[],
+): string {
+  const assignment = parseSortAnswer(raw);
+  const placed = Object.entries(assignment);
+  if (placed.length === 0) return 'No items placed.';
+
+  return placed
+    .map(([itemId, bucketId]) => `${labelForItem(items, itemId)} -> ${labelForBucket(buckets, bucketId)}`)
+    .join('; ');
+}
+
+function describeOrderAnswer(raw: string, items: { id: string; label: string }[]): string {
+  const order = parseOrderAnswer(raw);
+  if (order.length === 0) return 'No ordering submitted.';
+  return order.map((itemId, index) => `${index + 1}. ${labelForItem(items, itemId)}`).join('; ');
+}
+
 /**
  * In-lesson "Explain my answer" affordance. Shown only when AI is enabled so
  * the MVP lesson flow is unchanged with AI off. The explanation is grounded in
@@ -73,23 +105,57 @@ function WrongAnswerAssist({
   prompt,
   learnerAnswer,
   correctAnswer,
+  answerKind,
+  choices,
+  selectedChoiceContext,
+  correctChoiceContext,
+  incorrectFeedback,
+  explanation,
+  context,
+  givenFacts,
+  hints: authoredHints,
+  solverHint,
+  onStrongestHintUsed,
 }: {
   conceptId: ConceptId;
   prompt: string;
   learnerAnswer: string;
   correctAnswer: string;
+  answerKind: WrongAnswerKind;
+  choices?: ProblemChoice[];
+  selectedChoiceContext?: ProblemChoice;
+  correctChoiceContext?: ProblemChoice;
+  incorrectFeedback?: string;
+  explanation?: string;
+  context?: string;
+  givenFacts?: string[];
+  hints?: string[];
+  solverHint?: string;
+  onStrongestHintUsed?: () => void;
 }) {
   const [loading, setLoading] = useState(false);
-  const [text, setText] = useState<string | undefined>();
-  const [usedAI, setUsedAI] = useState(false);
+  const [hints, setHints] = useState<HintEntry[]>([]);
+  const [hintLevel, setHintLevel] = useState<0 | HintDepth>(0);
+  const [hintExhausted, setHintExhausted] = useState(false);
+  const answerSignature = `${conceptId}\n${prompt}\n${context ?? ''}\n${answerKind}\n${learnerAnswer}\n${correctAnswer}`;
+  const latestAnswerSignature = useRef(answerSignature);
+
+  useEffect(() => {
+    latestAnswerSignature.current = answerSignature;
+    setLoading(false);
+    setHints([]);
+    setHintLevel(0);
+    setHintExhausted(false);
+  }, [answerSignature]);
 
   // Only an additive AI affordance: hidden entirely when AI is off so it never
   // just parrots the lesson's own hints. The model-backed explanation is tuned
   // to the learner's actual answer; the deterministic path is not worth showing.
   if (!isAIEnabled()) return null;
 
-  const run = async () => {
+  const run = async (nextHintLevel: HintDepth) => {
     if (loading) return;
+    const requestedAnswerSignature = answerSignature;
     setLoading(true);
     try {
       const result = await aiExplainWrongAnswer({
@@ -98,25 +164,76 @@ function WrongAnswerAssist({
         learnerAnswer,
         correctAnswer,
         params: {},
+        answerKind,
+        answerMode: 'nudge',
+        hintDepth: nextHintLevel,
+        choices,
+        selectedChoice: selectedChoiceContext,
+        correctChoice: correctChoiceContext,
+        incorrectFeedback,
+        explanation,
+        context,
+        givenFacts,
+        hints: authoredHints,
+        previousHints: hints.map((hint) => hint.text),
+        solverHint,
       });
-      // Only surface model prose; the deterministic fallback states the answer,
-      // which would undercut the lesson's reveal-on-demand flow. When AI is off
-      // (or unavailable) show an answer-free concept nudge instead.
-      setText(result.usedAI ? result.explanation : conceptHint(conceptId));
-      setUsedAI(result.usedAI);
+      // Nudge mode is answer-aware but answer-free, so the deterministic fallback
+      // is safe to show when the model is unavailable.
+      if (latestAnswerSignature.current === requestedAnswerSignature) {
+        if (isDuplicateHint(result.explanation, hints)) {
+          setHintExhausted(true);
+          return;
+        }
+        const maxHintDepth = result.maxHintDepth ?? 3;
+        const noMoreHints = result.hasMoreHints === false || nextHintLevel >= maxHintDepth || nextHintLevel >= 3;
+        setHints((priorHints) => [
+          ...priorHints.filter((hint) => hint.level !== nextHintLevel),
+          { level: nextHintLevel, text: result.explanation, usedAI: result.usedAI },
+        ]);
+        setHintLevel(nextHintLevel);
+        setHintExhausted(noMoreHints);
+        if (noMoreHints) {
+          onStrongestHintUsed?.();
+        }
+      }
     } finally {
-      setLoading(false);
+      if (latestAnswerSignature.current === requestedAnswerSignature) {
+        setLoading(false);
+      }
     }
   };
 
   return (
-    <Box sx={{ mt: 1.5 }}>
-      {!text && !loading && (
-        <Button variant="outlined" size="small" onClick={run}>
+    <Box>
+      {hints.length === 0 && !loading && (
+        <Button variant="outlined" size="small" onClick={() => run(1)}>
           Get a hint on your answer
         </Button>
       )}
-      {(loading || text) && <AIAssistPanel title="A nudge on your thinking" loading={loading} text={text} aiTag={usedAI} />}
+      {hints.length > 0 && (
+        <Box sx={{ display: 'grid', gap: 1 }}>
+          {hints
+            .slice()
+            .sort((a, b) => a.level - b.level)
+            .map((hint) => (
+              <AIAssistPanel key={hint.level} title={`Hint ${hint.level}`} text={hint.text} aiTag={hint.usedAI} />
+            ))}
+        </Box>
+      )}
+      {loading && <AIAssistPanel title={`Hint ${Math.min(hintLevel + 1, 3)}`} loading />}
+      {hints.length > 0 && !hintExhausted && hintLevel < 3 && (
+        <Button
+          variant="outlined"
+          color="secondary"
+          size="medium"
+          onClick={() => run((hintLevel + 1) as HintDepth)}
+          disabled={loading}
+          sx={{ mt: 1, fontWeight: 800, px: 2 }}
+        >
+          Give me a stronger hint
+        </Button>
+      )}
     </Box>
   );
 }
@@ -147,18 +264,89 @@ function ConceptAnotherAssist({ conceptId }: { conceptId: ConceptId }) {
   };
 
   return (
-    <Box sx={{ mb: 2 }}>
-      {!text && !loading && (
+    <Box
+      sx={{
+        mb: 2,
+        mt: -1,
+        pt: 1.25,
+        borderTop: '1px solid',
+        borderColor: 'divider',
+      }}
+    >
+      <Stack
+        direction={{ xs: 'column', sm: 'row' }}
+        spacing={0.75}
+        alignItems={{ xs: 'flex-start', sm: 'center' }}
+        justifyContent="space-between"
+      >
+        <Typography variant="body2" color="text.secondary" sx={{ lineHeight: 1.45 }}>
+          Want a different angle on this idea?
+        </Typography>
         <Button
-          variant="outlined"
+          variant="text"
           color="primary"
+          size="small"
           onClick={run}
-          sx={{ fontWeight: 700, px: 2.5, py: 1 }}
+          disabled={loading}
+          aria-expanded={Boolean(text || loading)}
+          sx={{
+            minHeight: 32,
+            px: 1,
+            fontWeight: 800,
+            alignSelf: { xs: 'flex-start', sm: 'center' },
+          }}
         >
-          Explain this another way
+          {text ? 'Try another wording' : 'Explain this another way'}
         </Button>
+      </Stack>
+      {(loading || text) && (
+        <Box
+          role="note"
+          aria-live="polite"
+          sx={{
+            mt: 1,
+            pl: 1.5,
+            py: 1,
+            borderLeft: '3px solid',
+            borderColor: 'primary.light',
+            bgcolor: 'rgba(15,111,104,0.035)',
+            borderRadius: 1.5,
+            overflowWrap: 'anywhere',
+          }}
+        >
+          <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: loading ? 0 : 0.35 }}>
+            <Typography variant="caption" sx={{ fontWeight: 850, color: 'primary.dark', letterSpacing: 0.1 }}>
+              Another way to see it
+            </Typography>
+            {usedAI && (
+              <Chip
+                label="AI"
+                size="small"
+                sx={{
+                  height: 18,
+                  fontSize: '0.66rem',
+                  fontWeight: 800,
+                  letterSpacing: 0.4,
+                  bgcolor: 'rgba(195,95,44,0.14)',
+                  color: 'secondary.main',
+                }}
+              />
+            )}
+          </Stack>
+          {loading ? (
+            <Stack direction="row" spacing={1} alignItems="center">
+              <CircularProgress size={14} thickness={6} sx={{ color: 'primary.main' }} />
+              <Typography variant="body2" color="text.secondary" sx={{ fontStyle: 'italic' }}>
+                Thinking…
+              </Typography>
+            </Stack>
+          ) : (
+            <Typography variant="body2" sx={{ lineHeight: 1.5, color: 'text.secondary' }}>
+              {text}
+            </Typography>
+          )}
+        </Box>
       )}
-      {(loading || text) && <AIAssistPanel title="Another way to see it" loading={loading} text={text} aiTag={usedAI} />}
     </Box>
   );
 }
@@ -196,10 +384,10 @@ interface LessonStepRendererProps {
   hasNextStep?: boolean;
   onSubmitAnswer: (choice: string) => void;
   onAdvance: () => void;
-  /** Reveal the next progressive hint for the active free-response context. */
-  onRevealHint?: () => void;
   /** Reveal the accepted answer for the active free-response context. */
   onRevealAnswer?: () => void;
+  /** Mark that the strongest wrong-answer hint was used for this answer context. */
+  onStrongestHintUsed?: () => void;
 }
 
 function Fraction({ numerator, denominator }: { numerator: string; denominator: string }) {
@@ -260,6 +448,33 @@ function renderInlineMath(text: string) {
 // only inspected to pick the right format hint — it is never rendered.
 const FRACTION_ANSWER_PLACEHOLDER = 'e.g. 1/3, 0.33, or 33%';
 const INTEGER_ANSWER_PLACEHOLDER = 'Enter a whole number';
+type HintDepth = 1 | 2 | 3;
+type HintEntry = { level: HintDepth; text: string; usedAI: boolean };
+
+function normalizeHintText(text: string): string {
+  return text.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+function hintWords(text: string): string[] {
+  return normalizeHintText(text).split(' ').filter((word) => word.length > 2);
+}
+
+function hintOverlapRatio(nextText: string, priorText: string): number {
+  const nextWords = hintWords(nextText);
+  if (nextWords.length === 0) return 1;
+  const priorWords = new Set(hintWords(priorText));
+  const overlap = nextWords.filter((word) => priorWords.has(word)).length;
+  return overlap / nextWords.length;
+}
+
+function isDuplicateHint(nextText: string, priorHints: HintEntry[]): boolean {
+  const next = normalizeHintText(nextText);
+  if (!next) return true;
+  return priorHints.some((hint) => {
+    const prior = normalizeHintText(hint.text);
+    return next === prior || next.startsWith(prior) || prior.startsWith(next) || hintOverlapRatio(nextText, hint.text) >= 0.72;
+  });
+}
 
 /**
  * Pick a generic placeholder for the answer input based on the SHAPE of the
@@ -275,6 +490,47 @@ function answerPlaceholder(acceptedAnswer?: string): string {
   // A plain whole number (optionally signed) is the only "integer" case.
   if (/^[+-]?\d+$/.test(trimmed)) return INTEGER_ANSWER_PLACEHOLDER;
   return FRACTION_ANSWER_PLACEHOLDER;
+}
+
+function compactText(value?: string): string {
+  return value?.replace(/\s+/g, ' ').trim() ?? '';
+}
+
+function problemAssistContext(problem: ProblemStep): string {
+  return [
+    problem.title ? `Step title: ${problem.title}` : '',
+    problem.description ? `Step description: ${compactText(problem.description)}` : '',
+    problem.explore?.body ? `Setup shown before question: ${compactText(problem.explore.body)}` : '',
+    problem.question ? `Parent question: ${compactText(problem.question)}` : '',
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
+function priorStageContext(stages: QuestionStage[], activeIndex: number): string {
+  return stages
+    .slice(0, activeIndex)
+    .map((stage, index) =>
+      [
+        `Prior part ${index + 1}: ${compactText(stage.prompt)}`,
+        stage.acceptedAnswer ? `Accepted prior answer: ${stage.acceptedAnswer}` : '',
+        stage.answer ? `Accepted prior choice: ${stage.answer}` : '',
+        stage.explanation ? `Prior explanation: ${compactText(stage.explanation)}` : '',
+      ]
+        .filter(Boolean)
+        .join(' '),
+    )
+    .join('\n');
+}
+
+function stageAssistContext(problem: ProblemStep, stage: QuestionStage, stageIndex: number): string {
+  return [
+    problemAssistContext(problem),
+    priorStageContext(problem.stages ?? [], stageIndex),
+    stage.demo?.target ? `Current demo target: ${stage.demo.target}` : '',
+  ]
+    .filter(Boolean)
+    .join('\n');
 }
 
 function ConceptBody({ body }: { body: string }) {
@@ -514,31 +770,35 @@ function AnswerFeedback({
 }
 
 interface RevealControlsProps {
-  hints?: string[];
-  revealed: number;
-  onRevealHint: () => void;
   onRevealAnswer: () => void;
+  unsuccessfulAttempts: number;
+  strongestHintUsed: boolean;
 }
 
-/**
- * On-demand hint/answer controls. Hints are revealed one at a time via
- * "Reveal hint"; once every hint is shown (or there are none), a "Reveal
- * answer" button appears so the learner can move on.
- */
-function RevealControls({ hints, revealed, onRevealHint, onRevealAnswer }: RevealControlsProps) {
-  const total = hints?.length ?? 0;
-  const moreHints = revealed < total;
+/** Escape hatch for learners who are stuck after trying the adaptive nudge. */
+function RevealControls({ onRevealAnswer, unsuccessfulAttempts, strongestHintUsed }: RevealControlsProps) {
+  if (unsuccessfulAttempts < 2 && !strongestHintUsed) {
+    return null;
+  }
+
   return (
-    <Stack direction="row" spacing={1} sx={{ mt: 1.5 }} flexWrap="wrap" useFlexGap>
-      {moreHints ? (
-        <Button variant="outlined" size="small" onClick={onRevealHint}>
-          {revealed === 0 ? 'Reveal a hint' : `Reveal next hint (${revealed}/${total})`}
-        </Button>
-      ) : (
-        <Button variant="outlined" size="small" color="warning" onClick={onRevealAnswer}>
-          Reveal answer
-        </Button>
-      )}
+    <Button variant="text" size="small" color="warning" onClick={onRevealAnswer} sx={{ fontWeight: 750 }}>
+      Reveal answer
+    </Button>
+  );
+}
+
+function FeedbackActionRow({ children }: { children: ReactNode }) {
+  return (
+    <Stack
+      direction={{ xs: 'column', sm: 'row' }}
+      spacing={1.25}
+      alignItems={{ xs: 'stretch', sm: 'center' }}
+      sx={{ mt: 1.25 }}
+      flexWrap="wrap"
+      useFlexGap
+    >
+      {children}
     </Stack>
   );
 }
@@ -631,6 +891,7 @@ function ChoiceList({ choices, draft, onDraftChange, selectedChoice, feedbackSta
           const isSelected = draft === choice.value;
             const showFeedback = selectedChoice === choice.value && feedbackState !== 'idle';
             const isCorrect = feedbackState === 'correct' && showFeedback;
+            const isRevealed = feedbackState === 'revealed' && showFeedback;
             const isIncorrect = feedbackState === 'incorrect' && showFeedback;
 
             return (
@@ -640,20 +901,30 @@ function ChoiceList({ choices, draft, onDraftChange, selectedChoice, feedbackSta
                   px: 2,
                   py: 1.25,
                   border: '1px solid',
-                  borderColor: isCorrect ? 'success.main' : isIncorrect ? 'warning.main' : isSelected ? 'primary.main' : 'divider',
+                  borderColor: isCorrect
+                    ? 'success.main'
+                    : isRevealed
+                      ? 'info.main'
+                      : isIncorrect
+                        ? 'warning.main'
+                        : isSelected
+                          ? 'primary.main'
+                          : 'divider',
                   borderRadius: 3,
                   bgcolor: isCorrect
                     ? 'rgba(46,125,50,0.10)'
-                    : isIncorrect
-                      ? 'rgba(237,108,2,0.10)'
-                      : isSelected
-                        ? 'rgba(15,111,104,0.08)'
-                        : 'background.paper',
+                    : isRevealed
+                      ? 'rgba(2,136,209,0.10)'
+                      : isIncorrect
+                        ? 'rgba(237,108,2,0.10)'
+                        : isSelected
+                          ? 'rgba(15,111,104,0.08)'
+                          : 'background.paper',
                 }}
               >
                 <FormControlLabel
                   value={choice.value}
-                  disabled={feedbackState === 'correct'}
+                  disabled={feedbackState === 'correct' || feedbackState === 'revealed'}
                   control={<Radio />}
                   label={<span className="numeric">{choice.label}</span>}
                   sx={{ m: 0, width: '100%' }}
@@ -662,15 +933,17 @@ function ChoiceList({ choices, draft, onDraftChange, selectedChoice, feedbackSta
                   <Typography
                     variant="body2"
                     className="numeric"
-                    color={isCorrect ? 'success.dark' : 'text.secondary'}
+                    color={isCorrect ? 'success.dark' : isRevealed ? 'info.dark' : 'text.secondary'}
                   sx={{ display: 'block', pl: 4, pr: 1, pt: 0.5, pb: 0.5, lineHeight: 1.45, overflowWrap: 'anywhere' }}
                   >
                   <Box component="span" aria-hidden sx={{ fontWeight: 900, mr: 0.5 }}>
-                    {isCorrect ? '✓' : '✗'}
+                    {isCorrect ? '✓' : isRevealed ? '➜' : '✗'}
                   </Box>
                     {isCorrect
-                    ? `Correct. ${explanation ?? ''}`
-                    : incorrectFeedback ?? 'Not quite. Recall that probability = successful outcomes / total possible outcomes.'}
+                      ? `Correct. ${explanation ?? ''}`
+                      : isRevealed
+                        ? `Answer revealed. ${explanation ?? ''}`
+                        : incorrectFeedback ?? 'Not quite. Recall that probability = successful outcomes / total possible outcomes.'}
                   </Typography>
                 )}
               </Box>
@@ -695,19 +968,23 @@ interface StageBlockProps {
   revealed: boolean;
   feedbackState: FeedbackUiState;
   revealedHints: number;
+  unsuccessfulAttempts: number;
+  strongestHintUsed: boolean;
   draft: string;
   selectedChoice: string | null;
   /** Concept this lesson teaches, for grounding the AI "explain my answer" affordance. */
   conceptId: ConceptId;
   /** The parent question text, used as context for the AI explanation. */
   questionPrompt: string;
+  /** Full surrounding lesson context for AI hints. */
+  questionContext?: string;
   onDraftChange: (value: string) => void;
   onSubmitAnswer: (value: string) => void;
-  onRevealHint: () => void;
   onRevealAnswer: () => void;
+  onStrongestHintUsed?: () => void;
 }
 
-function StageBlock({ stage, index, isActive, resolved, revealed, feedbackState, revealedHints, draft, selectedChoice, conceptId, questionPrompt, onDraftChange, onSubmitAnswer, onRevealHint, onRevealAnswer }: StageBlockProps) {
+function StageBlock({ stage, index, isActive, resolved, revealed, feedbackState, revealedHints, unsuccessfulAttempts, strongestHintUsed, draft, selectedChoice, conceptId, questionPrompt, questionContext, onDraftChange, onSubmitAnswer, onRevealAnswer, onStrongestHintUsed }: StageBlockProps) {
   const stageChoices = stage.choices ?? [];
   const stageLearnerLabel = stageChoices.find((choice) => choice.value === selectedChoice)?.label ?? selectedChoice ?? '';
   const stageCorrectLabel = stageChoices.find((choice) => choice.value === stage.answer)?.label ?? stage.answer ?? '';
@@ -745,7 +1022,7 @@ function StageBlock({ stage, index, isActive, resolved, revealed, feedbackState,
             <Box component="span" aria-hidden sx={{ fontWeight: 900, mr: 0.5 }}>➜</Box>
             <Box component="span" sx={{ fontWeight: 800, mr: 0.5 }}>Answer revealed.</Box>
             The accepted answer is{' '}
-            <Box component="span" sx={{ fontWeight: 800 }}>{stage.acceptedAnswer}</Box>
+            <Box component="span" sx={{ fontWeight: 800 }}>{stage.format === 'free-response' ? stage.acceptedAnswer : stageCorrectLabel}</Box>
             . {stage.explanation}
           </Typography>
         ) : (
@@ -773,27 +1050,33 @@ function StageBlock({ stage, index, isActive, resolved, revealed, feedbackState,
                 disabled={answered}
               />
               <HintList hints={stage.hints} revealed={revealedHints} />
-              {!answered && (
-                <RevealControls
-                  hints={stage.hints}
-                  revealed={revealedHints}
-                  onRevealHint={onRevealHint}
-                  onRevealAnswer={onRevealAnswer}
-                />
-              )}
               <AnswerFeedback
                 state={feedbackState}
                 correctText={stage.explanation}
                 incorrectText={stage.incorrectFeedback ?? 'Not quite. Use a hint and try again.'}
                 revealedAnswer={stage.acceptedAnswer}
               />
-              {(feedbackState === 'incorrect' || feedbackState === 'revealed') && (
-                <WrongAnswerAssist
-                  conceptId={conceptId}
-                  prompt={stagePrompt}
-                  learnerAnswer={selectedChoice ?? ''}
-                  correctAnswer={stage.acceptedAnswer ?? ''}
-                />
+              {feedbackState === 'incorrect' && (
+                <FeedbackActionRow>
+                  <WrongAnswerAssist
+                    conceptId={conceptId}
+                    prompt={stagePrompt}
+                    learnerAnswer={selectedChoice ?? ''}
+                    correctAnswer={stage.acceptedAnswer ?? ''}
+                    answerKind="numeric"
+                    context={questionContext}
+                    hints={stage.hints}
+                    solverHint={stage.hints?.[stage.hints.length - 1]}
+                    onStrongestHintUsed={onStrongestHintUsed}
+                  />
+                  {!answered && (
+                    <RevealControls
+                      onRevealAnswer={onRevealAnswer}
+                      unsuccessfulAttempts={unsuccessfulAttempts}
+                      strongestHintUsed={strongestHintUsed}
+                    />
+                  )}
+                </FeedbackActionRow>
               )}
             </>
           ) : (
@@ -809,12 +1092,30 @@ function StageBlock({ stage, index, isActive, resolved, revealed, feedbackState,
                 onSubmit={onSubmitAnswer}
               />
               {feedbackState === 'incorrect' && (
-                <WrongAnswerAssist
-                  conceptId={conceptId}
-                  prompt={stagePrompt}
-                  learnerAnswer={stageLearnerLabel}
-                  correctAnswer={stageCorrectLabel}
-                />
+                <FeedbackActionRow>
+                  <WrongAnswerAssist
+                    conceptId={conceptId}
+                    prompt={stagePrompt}
+                    learnerAnswer={stageLearnerLabel}
+                    correctAnswer={stageCorrectLabel}
+                    answerKind="choice"
+                    choices={stageChoices}
+                    selectedChoiceContext={stageChoices.find((choice) => choice.value === selectedChoice)}
+                    correctChoiceContext={stageChoices.find((choice) => choice.value === stage.answer)}
+                    incorrectFeedback={stage.incorrectFeedback}
+                    explanation={stage.explanation}
+                    context={questionContext}
+                    hints={stage.hints}
+                    onStrongestHintUsed={onStrongestHintUsed}
+                  />
+                  {!answered && (
+                    <RevealControls
+                      onRevealAnswer={onRevealAnswer}
+                      unsuccessfulAttempts={unsuccessfulAttempts}
+                      strongestHintUsed={strongestHintUsed}
+                    />
+                  )}
+                </FeedbackActionRow>
               )}
             </>
           )}
@@ -834,8 +1135,8 @@ export function LessonStepRenderer({
   hasNextStep = true,
   onSubmitAnswer,
   onAdvance,
-  onRevealHint = () => {},
   onRevealAnswer = () => {},
+  onStrongestHintUsed,
 }: LessonStepRendererProps) {
   const activeStageIndex = questionView.activeStageIndex;
   const prefersReducedMotion = useReducedMotion();
@@ -1009,14 +1310,17 @@ export function LessonStepRenderer({
                           isActive ? feedbackState : questionView.revealedStages?.[index] ? 'revealed' : 'correct'
                         }
                         revealedHints={isActive ? questionView.revealedHints : 0}
+                        unsuccessfulAttempts={isActive ? questionView.stageUnsuccessfulAttempts?.[index] ?? 0 : 0}
+                        strongestHintUsed={isActive ? questionView.stageStrongestHintUsed?.[index] ?? false : false}
                         draft={draft}
                         selectedChoice={selectedChoice}
                         conceptId={lessonConcept}
                         questionPrompt={problem.question ?? ''}
+                        questionContext={stageAssistContext(problem, stage, index)}
                         onDraftChange={setDraft}
                         onSubmitAnswer={onSubmitAnswer}
-                        onRevealHint={onRevealHint}
                         onRevealAnswer={onRevealAnswer}
+                        onStrongestHintUsed={onStrongestHintUsed}
                       />
                     </motion.div>
                   );
@@ -1062,27 +1366,33 @@ export function LessonStepRenderer({
             disabled={answered}
           />
           <HintList hints={problem.hints} revealed={questionView.revealedHints} />
-          {!answered && (
-            <RevealControls
-              hints={problem.hints}
-              revealed={questionView.revealedHints}
-              onRevealHint={onRevealHint}
-              onRevealAnswer={onRevealAnswer}
-            />
-          )}
           <AnswerFeedback
             state={feedbackState}
             correctText={problem.explanation ?? ''}
             incorrectText={problem.incorrectFeedback ?? 'Not quite. Use a hint and try again.'}
             revealedAnswer={problem.acceptedAnswer}
           />
-          {(feedbackState === 'incorrect' || feedbackState === 'revealed') && (
-            <WrongAnswerAssist
-              conceptId={lessonConcept}
-              prompt={problem.question}
-              learnerAnswer={selectedChoice ?? ''}
-              correctAnswer={problem.acceptedAnswer ?? ''}
-            />
+          {feedbackState === 'incorrect' && (
+            <FeedbackActionRow>
+              <WrongAnswerAssist
+                conceptId={lessonConcept}
+                prompt={problem.question}
+                learnerAnswer={selectedChoice ?? ''}
+                correctAnswer={problem.acceptedAnswer ?? ''}
+                answerKind="numeric"
+                context={problemAssistContext(problem)}
+                hints={problem.hints}
+                solverHint={problem.hints?.[problem.hints.length - 1]}
+                onStrongestHintUsed={onStrongestHintUsed}
+              />
+              {!answered && (
+                <RevealControls
+                  onRevealAnswer={onRevealAnswer}
+                  unsuccessfulAttempts={questionView.unsuccessfulAttempts}
+                  strongestHintUsed={questionView.strongestHintUsed}
+                />
+              )}
+            </FeedbackActionRow>
           )}
           {showQuestionAdvance && (
             <Button variant="contained" size="large" onClick={onAdvance} sx={{ mt: 2 }}>
@@ -1130,27 +1440,33 @@ export function LessonStepRenderer({
             </Button>
           </Stack>
           <HintList hints={problem.hints} revealed={questionView.revealedHints} />
-          {!answered && (
-            <RevealControls
-              hints={problem.hints}
-              revealed={questionView.revealedHints}
-              onRevealHint={onRevealHint}
-              onRevealAnswer={onRevealAnswer}
-            />
-          )}
           <AnswerFeedback
             state={feedbackState}
             correctText={problem.explanation ?? ''}
             incorrectText={problem.incorrectFeedback ?? 'Not quite. Use a hint and try again.'}
             revealedAnswer={problem.acceptedAnswer}
           />
-          {(feedbackState === 'incorrect' || feedbackState === 'revealed') && (
-            <WrongAnswerAssist
-              conceptId={lessonConcept}
-              prompt={problem.question}
-              learnerAnswer={selectedChoice ?? ''}
-              correctAnswer={problem.acceptedAnswer ?? ''}
-            />
+          {feedbackState === 'incorrect' && (
+            <FeedbackActionRow>
+              <WrongAnswerAssist
+                conceptId={lessonConcept}
+                prompt={problem.question}
+                learnerAnswer={selectedChoice ?? ''}
+                correctAnswer={problem.acceptedAnswer ?? ''}
+                answerKind="numeric"
+                context={problemAssistContext(problem)}
+                hints={problem.hints}
+                solverHint={problem.hints?.[problem.hints.length - 1]}
+                onStrongestHintUsed={onStrongestHintUsed}
+              />
+              {!answered && (
+                <RevealControls
+                  onRevealAnswer={onRevealAnswer}
+                  unsuccessfulAttempts={questionView.unsuccessfulAttempts}
+                  strongestHintUsed={questionView.strongestHintUsed}
+                />
+              )}
+            </FeedbackActionRow>
           )}
           {showQuestionAdvance && (
             <Button variant="contained" size="large" onClick={onAdvance} sx={{ mt: 2 }}>
@@ -1167,6 +1483,8 @@ export function LessonStepRenderer({
     const buckets = problem.sortBuckets ?? [];
     const placedCount = Object.keys(parseSortAnswer(draft)).length;
     const allPlaced = items.length > 0 && placedCount === items.length;
+    const submittedSortAnswer = selectedChoice ?? draft;
+    const correctSortAnswer = serializeSortAnswer(problem.sortSolution ?? {});
     const demoBlock = problem.demo ? (
       <Box sx={{ mb: 2.5 }}>
         <EmbeddedDemoView demo={problem.demo} />
@@ -1198,19 +1516,32 @@ export function LessonStepRenderer({
             </Button>
           </Stack>
           <HintList hints={problem.hints} revealed={questionView.revealedHints} />
-          {!answered && (
-            <RevealControls
-              hints={problem.hints}
-              revealed={questionView.revealedHints}
-              onRevealHint={onRevealHint}
-              onRevealAnswer={onRevealAnswer}
-            />
-          )}
           <AnswerFeedback
             state={feedbackState}
             correctText={problem.explanation ?? ''}
             incorrectText={problem.incorrectFeedback ?? 'Not quite. Re-check where each item belongs.'}
           />
+          {feedbackState === 'incorrect' && (
+            <FeedbackActionRow>
+              <WrongAnswerAssist
+                conceptId={lessonConcept}
+                prompt={problem.question}
+                learnerAnswer={describeSortAnswer(submittedSortAnswer, items, buckets)}
+                correctAnswer={describeSortAnswer(correctSortAnswer, items, buckets)}
+                answerKind="sort"
+                context={problemAssistContext(problem)}
+                hints={problem.hints}
+                onStrongestHintUsed={onStrongestHintUsed}
+              />
+              {!answered && (
+                <RevealControls
+                  onRevealAnswer={onRevealAnswer}
+                  unsuccessfulAttempts={questionView.unsuccessfulAttempts}
+                  strongestHintUsed={questionView.strongestHintUsed}
+                />
+              )}
+            </FeedbackActionRow>
+          )}
           {showQuestionAdvance && (
             <Button variant="contained" size="large" onClick={onAdvance} sx={{ mt: 2 }}>
               Continue
@@ -1227,6 +1558,8 @@ export function LessonStepRenderer({
     // draft is seeded with a stable scramble (see initialDraftForStep), so it
     // never opens solved; the authored order is only a defensive fallback.
     const effectiveOrder = draft || serializeOrderAnswer(items.map((item) => item.id));
+    const submittedOrderAnswer = selectedChoice ?? effectiveOrder;
+    const correctOrderAnswer = serializeOrderAnswer(problem.orderSolution ?? []);
     const demoBlock = problem.demo ? (
       <Box sx={{ mb: 2.5 }}>
         <EmbeddedDemoView demo={problem.demo} />
@@ -1259,19 +1592,32 @@ export function LessonStepRenderer({
             </Button>
           </Stack>
           <HintList hints={problem.hints} revealed={questionView.revealedHints} />
-          {!answered && (
-            <RevealControls
-              hints={problem.hints}
-              revealed={questionView.revealedHints}
-              onRevealHint={onRevealHint}
-              onRevealAnswer={onRevealAnswer}
-            />
-          )}
           <AnswerFeedback
             state={feedbackState}
             correctText={problem.explanation ?? ''}
             incorrectText={problem.incorrectFeedback ?? 'Not quite. Re-check the order.'}
           />
+          {feedbackState === 'incorrect' && (
+            <FeedbackActionRow>
+              <WrongAnswerAssist
+                conceptId={lessonConcept}
+                prompt={problem.question}
+                learnerAnswer={describeOrderAnswer(submittedOrderAnswer, items)}
+                correctAnswer={describeOrderAnswer(correctOrderAnswer, items)}
+                answerKind="order"
+                context={problemAssistContext(problem)}
+                hints={problem.hints}
+                onStrongestHintUsed={onStrongestHintUsed}
+              />
+              {!answered && (
+                <RevealControls
+                  onRevealAnswer={onRevealAnswer}
+                  unsuccessfulAttempts={questionView.unsuccessfulAttempts}
+                  strongestHintUsed={questionView.strongestHintUsed}
+                />
+              )}
+            </FeedbackActionRow>
+          )}
           {showQuestionAdvance && (
             <Button variant="contained" size="large" onClick={onAdvance} sx={{ mt: 2 }}>
               Continue
@@ -1314,12 +1660,30 @@ export function LessonStepRenderer({
           onSubmit={onSubmitAnswer}
         />
         {feedbackState === 'incorrect' && (
-          <WrongAnswerAssist
-            conceptId={lessonConcept}
-            prompt={problem.question}
-            learnerAnswer={mcLearnerLabel}
-            correctAnswer={mcCorrectLabel}
-          />
+          <FeedbackActionRow>
+            <WrongAnswerAssist
+              conceptId={lessonConcept}
+              prompt={problem.question}
+              learnerAnswer={mcLearnerLabel}
+              correctAnswer={mcCorrectLabel}
+              answerKind="choice"
+              choices={mcChoices}
+              selectedChoiceContext={mcChoices.find((choice) => choice.value === selectedChoice)}
+              correctChoiceContext={mcChoices.find((choice) => choice.value === problem.answer)}
+              incorrectFeedback={problem.incorrectFeedback}
+              explanation={problem.explanation}
+              context={problemAssistContext(problem)}
+              hints={problem.hints}
+              onStrongestHintUsed={onStrongestHintUsed}
+            />
+            {!answered && (
+              <RevealControls
+                onRevealAnswer={onRevealAnswer}
+                unsuccessfulAttempts={questionView.unsuccessfulAttempts}
+                strongestHintUsed={questionView.strongestHintUsed}
+              />
+            )}
+          </FeedbackActionRow>
         )}
         {showQuestionAdvance && (
           <Button variant="contained" size="large" onClick={onAdvance} sx={{ mt: 2 }}>

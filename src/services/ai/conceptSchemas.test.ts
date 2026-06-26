@@ -99,6 +99,19 @@ describe('solveConcept — exact hand-checked cases', () => {
 
 describe('generateProblem — determinism and round-trip integrity', () => {
   const difficulties: Difficulty[] = ['intro', 'core', 'challenge'];
+  const expectedParamKeys = {
+    'single-event': ['favorable', 'total'],
+    complement: ['favorable', 'total'],
+    'and-multiply': ['favA', 'favB', 'totA', 'totB'],
+    'or-inclusion-exclusion': ['countA', 'countB', 'countBoth', 'total'],
+    conditional: ['countAandB', 'countB'],
+    'expected-value': ['pDen', 'pNum', 'payoffLose', 'payoffWin'],
+    bayes: ['falsePositive', 'priorH', 'sensitivity'],
+  } as const;
+
+  function stripNumbers(text: string): string {
+    return text.replace(/-?\d+(?:\.\d+)?(?:\/\d+)?/g, '#');
+  }
 
   it('is deterministic for a fixed seed', () => {
     const a = generateProblem('single-event', 'core', 12345);
@@ -172,6 +185,28 @@ describe('generateProblem — determinism and round-trip integrity', () => {
           expect(p.acceptedDecimal).toBeLessThanOrEqual(1);
         }
       }
+    }
+  });
+
+  it('adds structural complexity at higher levels without changing solver param schemas', () => {
+    const highLevelSignals = {
+      'single-event': /all groups together|full pile/i,
+      complement: /at least one/i,
+      'and-multiply': /independent/i,
+      'or-inclusion-exclusion': /double-counting|overlap/i,
+      conditional: /filtered/i,
+      'expected-value': /net/i,
+      bayes: /1000/i,
+    } as const;
+
+    for (const conceptId of ALL_CONCEPTS) {
+      const low = generateProblem(conceptId, 1, 11);
+      const high = generateProblem(conceptId, 8, 11);
+
+      expect(stripNumbers(high.prompt)).not.toBe(stripNumbers(low.prompt));
+      expect(high.prompt).toMatch(highLevelSignals[conceptId]);
+      expect(Object.keys(high.params).sort()).toEqual([...expectedParamKeys[conceptId]].sort());
+      expect(solveConcept(conceptId, high.params).fraction).toBe(high.acceptedAnswer);
     }
   });
 });

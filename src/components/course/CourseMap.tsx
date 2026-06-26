@@ -11,11 +11,11 @@ interface CourseMapProps {
   states: LessonNodeState[];
 }
 
-const NODE_SIZE = 96;
+const NODE_SIZE = 88;
 // Each node renders a label card this wide, centered on the node. It therefore extends
 // LABEL_WIDTH / 2 past the node center on either side, which the edge padding must absorb
 // so the first and last cards are never clipped by the container edge.
-const LABEL_WIDTH = NODE_SIZE + 56;
+const LABEL_WIDTH = NODE_SIZE + 60;
 const LABEL_HALF_WIDTH = LABEL_WIDTH / 2;
 // Breathing room kept between a label card edge and the content edge.
 const EDGE_MARGIN = 28;
@@ -25,14 +25,14 @@ const EDGE_MARGIN = 28;
 // crushing together on very narrow phones (where the map may then scroll a little
 // rather than overlapping every label). On any width above that floor the columns
 // distribute evenly across the full container.
-const MIN_HORIZONTAL_GAP = 120;
+const MIN_HORIZONTAL_GAP = 112;
 // Edge paddings must each stay >= LABEL_HALF_WIDTH + EDGE_MARGIN so the first and
 // last (wider-than-the-circle) label cards clear the container edges. RIGHT is a
 // touch larger than LEFT to pull the final column (Lesson 7) inward so its
 // centered label card never bleeds off the right edge.
-const LEFT_PADDING = 110;
-const RIGHT_PADDING = 160;
-const FALLBACK_HEIGHT = 520;
+const LEFT_PADDING = 104;
+const RIGHT_PADDING = 148;
+const FALLBACK_HEIGHT = 560;
 
 interface Point {
   x: number;
@@ -107,12 +107,21 @@ function nodeVisual(state: LessonNodeState) {
       labelColor: 'text.primary',
     };
   }
-  if (state.completed) {
+  if (state.status === 'proficient') {
     return {
       gradient: 'linear-gradient(160deg, #43c59e 0%, #1f9d74 100%)',
       ring: 'rgba(31,157,116,0.4)',
       icon: <CheckIcon />,
       iconColor: '#eafff6',
+      labelColor: 'text.primary',
+    };
+  }
+  if (state.completed) {
+    return {
+      gradient: 'linear-gradient(160deg, #ffb457 0%, #e6782e 100%)',
+      ring: 'rgba(230,120,46,0.38)',
+      icon: <CheckIcon />,
+      iconColor: '#fff7ed',
       labelColor: 'text.primary',
     };
   }
@@ -203,14 +212,14 @@ export default function CourseMap({ states }: CourseMapProps) {
     const maxLane = Math.max(0, ...lanes); // most positive = lowest valley
     const laneSpan = maxLane - minLane || 1;
 
-    const TOP_EXTENT = NODE_SIZE / 2 + 20; // node radius + halo breathing room
-    const BOTTOM_EXTENT = NODE_SIZE / 2 + 104; // node radius + label card below it
-    const VERTICAL_MARGIN = 14;
+    const TOP_EXTENT = NODE_SIZE / 2 + 28; // node radius + halo breathing room
+    const BOTTOM_EXTENT = NODE_SIZE / 2 + 156; // node radius + completed label/action card
+    const VERTICAL_MARGIN = 18;
 
     const availableRange = Math.max(height - TOP_EXTENT - BOTTOM_EXTENT - 2 * VERTICAL_MARGIN, 0);
     // Cap the per-lane pixel size so a tall container doesn't stretch the
     // zigzag into something gangly; centre the whole shape in leftover space.
-    const laneUnit = Math.min(availableRange / laneSpan, 104);
+    const laneUnit = Math.min(availableRange / laneSpan, 94);
     const usedHeight = laneSpan * laneUnit + TOP_EXTENT + BOTTOM_EXTENT;
     const topOffset = Math.max((height - usedHeight) / 2, VERTICAL_MARGIN) + TOP_EXTENT;
 
@@ -293,8 +302,8 @@ export default function CourseMap({ states }: CourseMapProps) {
         WebkitOverflowScrolling: 'touch',
         // Cap the height so a tall monitor doesn't leave a huge empty sky above
         // the trail, while still shrinking gracefully on shorter windows.
-        height: { xs: 440, md: 'min(560px, calc(100vh - 250px))' },
-        minHeight: { xs: 440, md: 520 },
+        height: { xs: 500, md: 'min(600px, calc(100vh - 230px))' },
+        minHeight: { xs: 500, md: 560 },
       }}
     >
       <Box
@@ -395,6 +404,12 @@ export default function CourseMap({ states }: CourseMapProps) {
           const visual = nodeVisual(state);
           const label = getMasteryLabel(state.status);
           const tooltip = state.unlocked ? `${state.lesson.title} - ${label}` : lockedTooltip(state);
+          const completedTone =
+            state.status === 'mastered'
+              ? { color: '#7a4a00', bg: 'rgba(245,166,35,0.16)', border: 'rgba(245,166,35,0.38)' }
+              : state.status === 'proficient'
+                ? { color: '#0f6f68', bg: 'rgba(15,111,104,0.12)', border: 'rgba(15,111,104,0.28)' }
+                : { color: '#9a4f13', bg: 'rgba(230,120,46,0.12)', border: 'rgba(230,120,46,0.28)' };
           // On a strict linear path the only available lesson is also the
           // recommended ("up next") one, which gets the pulsing halo below. This
           // stays defined for the rare fallback where a lesson has no graph entry.
@@ -412,7 +427,7 @@ export default function CourseMap({ states }: CourseMapProps) {
                 top: point.y,
                 transform: 'translate(-50%, -50%)',
                 zIndex: 2,
-                width: NODE_SIZE + 56,
+                width: LABEL_WIDTH,
                 textAlign: 'center',
               }}
             >
@@ -468,24 +483,46 @@ export default function CourseMap({ states }: CourseMapProps) {
                   </Box>
                   <Box
                     sx={{
-                      mt: 1.25,
-                      px: 1.25,
-                      py: 0.5,
+                      mt: 1,
+                      px: 1.1,
+                      py: 0.45,
                       borderRadius: 999,
                       bgcolor: 'rgba(255,253,247,0.92)',
                       boxShadow: '0 4px 12px rgba(68,50,23,0.12)',
-                      maxWidth: NODE_SIZE + 56,
+                      maxWidth: LABEL_WIDTH,
                     }}
                   >
                     <Typography
                       variant="caption"
-                      sx={{ display: 'block', fontWeight: 800, color: 'text.secondary', textTransform: 'uppercase', letterSpacing: 0.6, fontSize: 10 }}
+                      sx={{ display: 'block', fontWeight: 800, color: 'text.secondary', textTransform: 'uppercase', letterSpacing: 0.55, fontSize: 9.3 }}
                     >
                       Lesson {state.lesson.order ?? index + 1}
                     </Typography>
-                    <Typography variant="body2" sx={{ fontWeight: 700, lineHeight: 1.15, color: visual.labelColor }}>
+                    <Typography variant="body2" sx={{ fontWeight: 700, fontSize: 12.5, lineHeight: 1.12, color: visual.labelColor }}>
                       {state.lesson.title}
                     </Typography>
+                    {state.completed && (
+                      <Typography
+                        variant="caption"
+                        sx={{
+                          display: 'inline-flex',
+                          mt: 0.35,
+                          px: 0.75,
+                          py: 0.12,
+                          borderRadius: 999,
+                          border: `1px solid ${completedTone.border}`,
+                          bgcolor: completedTone.bg,
+                          color: completedTone.color,
+                          fontWeight: 850,
+                          fontSize: 8.8,
+                          letterSpacing: 0.45,
+                          textTransform: 'uppercase',
+                          lineHeight: 1.25,
+                        }}
+                      >
+                        {label}
+                      </Typography>
+                    )}
                     {state.available && (
                       <Typography
                         variant="caption"
@@ -521,19 +558,19 @@ export default function CourseMap({ states }: CourseMapProps) {
                           navigate(`/practice?concept=${conceptsForLessonId(state.lesson.lessonId)[0]}`);
                         }}
                         sx={{
-                          mt: 0.6,
+                          mt: 0.45,
                           display: 'inline-flex',
                           alignItems: 'center',
                           gap: 0.4,
-                          px: 1,
-                          py: 0.3,
+                          px: 0.85,
+                          py: 0.22,
                           border: '1px solid rgba(15,111,104,0.35)',
                           borderRadius: 999,
                           bgcolor: 'rgba(15,111,104,0.08)',
                           color: '#0f6f68',
                           cursor: 'pointer',
                           fontWeight: 800,
-                          fontSize: 10,
+                          fontSize: 9.2,
                           letterSpacing: 0.4,
                           textTransform: 'uppercase',
                           lineHeight: 1.2,
@@ -541,7 +578,7 @@ export default function CourseMap({ states }: CourseMapProps) {
                           '&:hover': { bgcolor: 'rgba(15,111,104,0.16)' },
                         }}
                       >
-                        Practice ▸
+                        {state.status === 'completed' ? 'Practice now' : 'Practice'}
                       </Box>
                     )}
                   </Box>

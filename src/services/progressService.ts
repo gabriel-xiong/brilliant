@@ -14,14 +14,14 @@ export interface LessonProgress {
   lastStepIndex: number;
   completed: boolean;
   score: number;
-  masteryStatus: 'not-started' | 'in-progress' | 'almost-done' | 'completed' | 'mastered';
+  masteryStatus: 'not-started' | 'in-progress' | 'almost-done' | 'completed' | 'proficient' | 'mastered';
   stepAttempts: Record<string, StepProgress>;
   updatedAt: string;
 }
 
 export interface MasterySummaryEntry {
   score: number;
-  status: 'not-started' | 'in-progress' | 'almost-done' | 'completed' | 'mastered';
+  status: 'not-started' | 'in-progress' | 'almost-done' | 'completed' | 'proficient' | 'mastered';
   lastUpdated: string;
 }
 
@@ -116,7 +116,8 @@ const masteryStatusRank: Record<string, number> = {
   'in-progress': 1,
   'almost-done': 2,
   completed: 3,
-  mastered: 4,
+  proficient: 4,
+  mastered: 5,
 };
 
 function masteryRank(status: string | null | undefined): number {
@@ -223,10 +224,14 @@ export function calculateLessonProgress(
   const firstAttemptAccuracy = problemSteps.length > 0 ? correctFirstAttemptCount / problemSteps.length : 0;
   const answeredProblemCount = problemSteps.filter((step) => stepAttempts[step.stepId]?.lastResult === 'correct').length;
   const lessonProgressRatio = Math.max(lastStepIndex / Math.max(lesson.steps.length - 1, 1), answeredProblemCount / Math.max(problemSteps.length, 1));
+  const proficientThreshold = lesson.masteryCriteria.minFirstAttemptAccuracy;
+  const masteredThreshold = Math.max(proficientThreshold, 0.9);
   const computedStatus: MasteryStatus = completed
-    ? firstAttemptAccuracy >= lesson.masteryCriteria.minFirstAttemptAccuracy
+    ? firstAttemptAccuracy >= masteredThreshold
       ? 'mastered'
-      : 'completed'
+      : firstAttemptAccuracy >= proficientThreshold
+        ? 'proficient'
+        : 'completed'
     : lessonProgressRatio >= 0.66
       ? 'almost-done'
       : lessonProgressRatio > 0

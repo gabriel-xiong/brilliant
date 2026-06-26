@@ -307,17 +307,197 @@ function scaledFavorable(rng: () => number, total: number, level: number): numbe
   return lo <= hi ? randInt(rng, lo, hi) : randInt(rng, 1, total - 1);
 }
 
+type PromptTier = 'simple' | 'layered' | 'challenge';
+
+function promptTier(level: number): PromptTier {
+  if (level <= 2) return 'simple';
+  if (level <= 5) return 'layered';
+  return 'challenge';
+}
+
+function variantIndex(seed: number, level: number, count: number): number {
+  return Math.abs(seed + level * 17) % count;
+}
+
+function chooseTemplate<T>(
+  level: number,
+  seed: number,
+  templates: Record<PromptTier, T[]>,
+): T {
+  const tier = promptTier(level);
+  const choices = templates[tier];
+  return choices[variantIndex(seed, level, choices.length)];
+}
+
 /** Cover stories for single-event so practice is not always the same spinner. */
-const SINGLE_EVENT_SCENARIOS: Array<(favorable: number, total: number) => string> = [
+const SINGLE_EVENT_SCENARIOS: Record<PromptTier, Array<(favorable: number, total: number) => string>> = {
+  simple: [
   (f, t) => `A spinner has ${t} equal slices; ${f} of them are gold. What is the probability the spinner lands on gold?`,
   (f, t) => `A raffle drum holds ${t} tickets and ${f} of them win a prize. If you draw one ticket at random, what is the probability it wins?`,
   (f, t) => `A bag holds ${t} marbles; ${f} of them are red. Drawing one marble at random, what is the probability it is red?`,
   (f, t) => `A shelf has ${t} sealed boxes and ${f} of them contain a toy. Picking one box at random, what is the probability it has a toy?`,
-];
+  ],
+  layered: [
+    (f, t) => `A teacher mixes ${t} project cards from two class sections into one stack. ${f} cards are marked "excellent". If one card is drawn from the combined stack, what is the probability it is marked excellent?`,
+    (f, t) => `A store audits ${t} orders from several batches. ${f} orders used gift wrapping; batch labels do not affect the random pick. What is the probability a randomly chosen order used gift wrapping?`,
+  ],
+  challenge: [
+    (f, t) => `A museum has ${t} visitor badges spread across different tour groups. ${f} badges include access to the planetarium. If the desk samples one badge from all groups together, what is the probability it includes planetarium access?`,
+    (f, t) => `A coach combines ${t} tryout forms after sorting them by position. ${f} forms list prior tournament experience. If one form is reviewed at random from the full pile, what is the probability it lists tournament experience?`,
+  ],
+};
 
-function singleEventPrompt(seed: number, favorable: number, total: number): string {
-  const pick = SINGLE_EVENT_SCENARIOS[Math.abs(seed) % SINGLE_EVENT_SCENARIOS.length];
+function singleEventPrompt(level: number, seed: number, favorable: number, total: number): string {
+  const pick = chooseTemplate(level, seed, SINGLE_EVENT_SCENARIOS);
   return pick(favorable, total);
+}
+
+const COMPLEMENT_SCENARIOS: Record<PromptTier, Array<(favorable: number, total: number) => string>> = {
+  simple: [
+    (f, t) => `A weather model says rain happens on ${f} of the next ${t} days. What is the probability a randomly chosen day is dry (no rain)?`,
+    (f, t) => `A bag has ${t} tokens, and ${f} are blue. What is the probability a randomly drawn token is not blue?`,
+  ],
+  layered: [
+    (f, t) => `A quality team says ${f} of ${t} sampled devices passed every check. What is the probability a randomly chosen device did not pass every check?`,
+    (f, t) => `A delivery board lists ${t} routes, and ${f} are fully on time. What is the probability a randomly selected route has at least one delay?`,
+  ],
+  challenge: [
+    (f, t) => `A batch report tracks ${t} shipments. ${f} shipments cleared both packaging and address checks, so the easier path is to subtract those from the whole batch. What is the probability a shipment failed at least one of the two checks?`,
+    (f, t) => `In a rehearsal log, ${f} of ${t} run-throughs finished with no missed cue. What is the probability a randomly chosen run-through had at least one missed cue?`,
+  ],
+};
+
+function complementPrompt(level: number, seed: number, favorable: number, total: number): string {
+  const pick = chooseTemplate(level, seed, COMPLEMENT_SCENARIOS);
+  return pick(favorable, total);
+}
+
+const AND_SCENARIOS: Record<
+  PromptTier,
+  Array<(favA: number, totA: number, favB: number, totB: number) => string>
+> = {
+  simple: [
+    (a, ta, b, tb) => `Machine A passes a part with probability ${a}/${ta}; machine B passes independently with probability ${b}/${tb}. What is the probability a part passes BOTH machines?`,
+    (a, ta, b, tb) => `A spinner lands on green with probability ${a}/${ta}, then an independent card draw is a star with probability ${b}/${tb}. What is the probability of green AND star?`,
+  ],
+  layered: [
+    (a, ta, b, tb) => `A login must pass two independent checks: the password check passes with probability ${a}/${ta}, and the device check passes with probability ${b}/${tb}. What is the probability both checks pass?`,
+    (a, ta, b, tb) => `A package goes through two independent scanners. Scanner A accepts it with probability ${a}/${ta}; scanner B accepts it with probability ${b}/${tb}. What is the probability the package is accepted by both scanners?`,
+  ],
+  challenge: [
+    (a, ta, b, tb) => `A robot has to complete two independent steps in sequence. It aligns the part correctly with probability ${a}/${ta}, then seals it correctly with probability ${b}/${tb}. What is the probability the robot succeeds at both requirements?`,
+    (a, ta, b, tb) => `A game level has two independent gates. The first opens with probability ${a}/${ta}; after that, the bonus door opens with probability ${b}/${tb}. What is the probability a player gets through both gates?`,
+  ],
+};
+
+function andPrompt(level: number, seed: number, favA: number, totA: number, favB: number, totB: number): string {
+  const pick = chooseTemplate(level, seed, AND_SCENARIOS);
+  return pick(favA, totA, favB, totB);
+}
+
+const OR_SCENARIOS: Record<
+  PromptTier,
+  Array<(total: number, countA: number, countB: number, countBoth: number) => string>
+> = {
+  simple: [
+    (t, a, b, both) => `In a class of ${t} students, ${a} play soccer, ${b} play tennis, and ${both} play both. If you pick a student at random, what is the probability they play soccer OR tennis?`,
+    (t, a, b, both) => `A survey has ${t} responses: ${a} mention podcasts, ${b} mention videos, and ${both} mention both. What is the probability a random response mentions podcasts OR videos?`,
+  ],
+  layered: [
+    (t, a, b, both) => `A club roster has ${t} members. ${a} signed up for the coding workshop, ${b} signed up for the design workshop, and ${both} are on both lists. What is the probability a randomly chosen member signed up for coding OR design?`,
+    (t, a, b, both) => `A playlist has ${t} songs. ${a} are tagged "upbeat", ${b} are tagged "acoustic", and ${both} have both tags. What is the probability a random song has at least one of those two tags?`,
+  ],
+  challenge: [
+    (t, a, b, both) => `A school tracks ${t} students for two support lists. ${a} are on the tutoring list, ${b} are on the practice-lab list, and ${both} students appear on both lists, where double-counting is the trap. What is the probability a random student is on tutoring OR practice lab?`,
+    (t, a, b, both) => `An app labels ${t} bug reports. ${a} involve login, ${b} involve payments, and ${both} are counted in both categories. What is the probability a random report involves login OR payments without counting the overlap twice?`,
+  ],
+};
+
+function orPrompt(level: number, seed: number, total: number, countA: number, countB: number, countBoth: number): string {
+  const pick = chooseTemplate(level, seed, OR_SCENARIOS);
+  return pick(total, countA, countB, countBoth);
+}
+
+const CONDITIONAL_SCENARIOS: Record<PromptTier, Array<(countB: number, countAandB: number) => string>> = {
+  simple: [
+    (b, ab) => `Over the last ${b} cloudy days, it rained on ${ab} of them. Given that a day is cloudy, what is the probability it rains? (P(rain | cloudy))`,
+    (b, ab) => `Among ${b} students who joined the study group, ${ab} passed the quiz. Given a student joined the study group, what is the probability they passed?`,
+  ],
+  layered: [
+    (b, ab) => `A survey first filters to the ${b} people who use the app every week. Of that filtered group, ${ab} also use reminders. Given someone uses the app every week, what is the probability they use reminders?`,
+    (b, ab) => `A coach looks only at the ${b} players who attended extra practice. ${ab} of those players improved their free throws. Given extra practice attendance, what is the probability a player improved?`,
+  ],
+  challenge: [
+    (b, ab) => `A table row is already filtered to "ordered lunch": total in row = ${b}, chose fruit = ${ab}. Given a student ordered lunch, what is the probability they chose fruit?`,
+    (b, ab) => `A support dashboard is filtered to the ${b} tickets marked urgent. ${ab} of those urgent tickets also mention billing. Given a ticket is urgent, what is the probability it mentions billing?`,
+  ],
+};
+
+function conditionalPrompt(level: number, seed: number, countB: number, countAandB: number): string {
+  const pick = chooseTemplate(level, seed, CONDITIONAL_SCENARIOS);
+  return pick(countB, countAandB);
+}
+
+function money(value: number): string {
+  return value < 0 ? `-$${Math.abs(value)}` : `$${value}`;
+}
+
+function payoffText(value: number): string {
+  if (value > 0) return `gain ${money(value)}`;
+  if (value < 0) return `lose $${Math.abs(value)}`;
+  return 'break even';
+}
+
+const EXPECTED_VALUE_SCENARIOS: Record<
+  PromptTier,
+  Array<(pNum: number, pDen: number, payoffWin: number, payoffLose: number) => string>
+> = {
+  simple: [
+    (n, d, win, lose) => `A game spinner lands on "win" with probability ${n}/${d}. If it wins you gain ${money(win)}; otherwise you ${payoffText(lose)}. What is the expected payout (in dollars) per play?`,
+    (n, d, win, lose) => `A mystery box pays ${money(win)} with probability ${n}/${d}; otherwise you ${payoffText(lose)}. What is the expected payout per box?`,
+  ],
+  layered: [
+    (n, d, win, lose) => `A carnival game has already included its entry fee in the net payouts. You gain ${money(win)} with probability ${n}/${d}; otherwise you ${payoffText(lose)}. What is the expected net value per play?`,
+    (n, d, win, lose) => `A promotion gives a net reward of ${money(win)} with probability ${n}/${d}. In every other case, the net result is ${money(lose)}. What is the expected net value for one try?`,
+  ],
+  challenge: [
+    (n, d, win, lose) => `A one-play offer has two net outcomes after all fees: success pays ${money(win)} with probability ${n}/${d}, and no success gives ${money(lose)}. What is the long-run average net value of one play?`,
+    (n, d, win, lose) => `A decision card shows net profit, not gross prize. It earns ${money(win)} with probability ${n}/${d}; otherwise it ends at ${money(lose)}. What expected net profit should you assign to one card?`,
+  ],
+};
+
+function expectedValuePrompt(
+  level: number,
+  seed: number,
+  pNum: number,
+  pDen: number,
+  payoffWin: number,
+  payoffLose: number,
+): string {
+  const pick = chooseTemplate(level, seed, EXPECTED_VALUE_SCENARIOS);
+  return pick(pNum, pDen, payoffWin, payoffLose);
+}
+
+const BAYES_SCENARIOS: Record<
+  PromptTier,
+  Array<(priorH: number, sensitivity: number, falsePositive: number) => string>
+> = {
+  simple: [
+    (h, sens, fp) => `A disease affects ${h / 10}% of people. A test correctly flags it ${sens / 10}% of the time when present, but also gives a false positive ${fp / 10}% of the time when absent. If someone tests positive, what is the probability they actually have the disease?`,
+  ],
+  layered: [
+    (h, sens, fp) => `A screening test is used in a group where ${h / 10}% have the condition. It catches ${sens / 10}% of true cases and falsely flags ${fp / 10}% of people without the condition. If a person is flagged, what is the probability they truly have it?`,
+    (h, sens, fp) => `An alert system watches for a rare fault present in ${h / 10}% of machines. It alerts on ${sens / 10}% of faulty machines and on ${fp / 10}% of healthy machines. Given an alert, what is the probability the machine is faulty?`,
+  ],
+  challenge: [
+    (h, sens, fp) => `Think in natural frequencies: out of every 1000 people, about ${h} have the condition. The test flags ${sens / 10}% of those true cases and ${fp / 10}% of people without it. Among everyone who tests positive, what fraction actually has the condition?`,
+    (h, sens, fp) => `A rare-defect scanner checks a population where ${h} out of 1000 items are defective. It catches ${sens / 10}% of defective items, but false positives happen for ${fp / 10}% of non-defective items. If an item is flagged, what is the probability it is truly defective?`,
+  ],
+};
+
+function bayesPrompt(level: number, seed: number, priorH: number, sensitivity: number, falsePositive: number): string {
+  const pick = chooseTemplate(level, seed, BAYES_SCENARIOS);
+  return pick(priorH, sensitivity, falsePositive);
 }
 
 // ---------------------------------------------------------------------------
@@ -331,8 +511,8 @@ function singleEventPrompt(seed: number, favorable: number, total: number): stri
  * and `solveConcept(params)` round-trips to the same value.
  *
  * This is the ALWAYS-AVAILABLE fallback for the AI-authored path: when AI is
- * off, the learner is signed out, or generation fails, the practice surface
- * serves this instead, so the experience never hangs or goes wrong.
+ * off or generation fails, the practice surface serves this instead, so the
+ * experience never hangs or goes wrong.
  *
  * @param conceptId  Which concept to drill.
  * @param difficulty Either a legacy band ('intro'|'core'|'challenge') OR an
@@ -363,7 +543,7 @@ export function generateProblem(
       const total = randInt(rng, lo, hi);
       const favorable = scaledFavorable(rng, total, level);
       params = { favorable, total };
-      prompt = singleEventPrompt(seed, favorable, total);
+      prompt = singleEventPrompt(level, seed, favorable, total);
       break;
     }
 
@@ -372,7 +552,7 @@ export function generateProblem(
       const total = randInt(rng, lo, hi);
       const favorable = scaledFavorable(rng, total, level);
       params = { favorable, total };
-      prompt = `A weather model says rain happens on ${favorable} of the next ${total} days. What is the probability a randomly chosen day is dry (no rain)?`;
+      prompt = complementPrompt(level, seed, favorable, total);
       break;
     }
 
@@ -383,7 +563,7 @@ export function generateProblem(
       const totB = randInt(rng, lo, hi);
       const favB = scaledFavorable(rng, totB, level);
       params = { favA, totA, favB, totB };
-      prompt = `Machine A passes a part with probability ${favA}/${totA}; machine B passes independently with probability ${favB}/${totB}. What is the probability a part passes BOTH machines?`;
+      prompt = andPrompt(level, seed, favA, totA, favB, totB);
       break;
     }
 
@@ -396,7 +576,7 @@ export function generateProblem(
       const maxBoth = Math.min(countA, countB);
       const countBoth = randInt(rng, minBoth, maxBoth);
       params = { total, countA, countB, countBoth };
-      prompt = `In a class of ${total} students, ${countA} play soccer, ${countB} play tennis, and ${countBoth} play both. If you pick a student at random, what is the probability they play soccer OR tennis?`;
+      prompt = orPrompt(level, seed, total, countA, countB, countBoth);
       break;
     }
 
@@ -405,7 +585,7 @@ export function generateProblem(
       const countB = randInt(rng, lo, hi);
       const countAandB = scaledFavorable(rng, countB, level);
       params = { countB, countAandB };
-      prompt = `Over the last ${countB} cloudy days, it rained on ${countAandB} of them. Given that a day is cloudy, what is the probability it rains? (P(rain | cloudy))`;
+      prompt = conditionalPrompt(level, seed, countB, countAandB);
       break;
     }
 
@@ -418,9 +598,7 @@ export function generateProblem(
       const payoffWin = randInt(rng, 2 + level, 5 + 3 * level);
       const payoffLose = -randInt(rng, 0, 2 + level);
       params = { pNum, pDen, payoffWin, payoffLose };
-      const winText = `win $${payoffWin}`;
-      const loseText = payoffLose >= 0 ? `win $${payoffLose}` : `lose $${-payoffLose}`;
-      prompt = `A game spinner lands on "win" with probability ${pNum}/${pDen}. If it wins you ${winText}; otherwise you ${loseText}. What is the expected payout (in dollars) per play?`;
+      prompt = expectedValuePrompt(level, seed, pNum, pDen, payoffWin, payoffLose);
       break;
     }
 
@@ -434,7 +612,7 @@ export function generateProblem(
       const sensitivity = randInt(rng, 80, 99) * 10; // 800..990 (80%..99%)
       const falsePositive = randInt(rng, 2, 20) * 10; // 20..200 (2%..20%)
       params = { priorH, sensitivity, falsePositive };
-      prompt = `A disease affects ${priorH / 10}% of people. A test correctly flags it ${sensitivity / 10}% of the time when present, but also gives a false positive ${falsePositive / 10}% of the time when absent. If someone tests positive, what is the probability they actually have the disease?`;
+      prompt = bayesPrompt(level, seed, priorH, sensitivity, falsePositive);
       break;
     }
 

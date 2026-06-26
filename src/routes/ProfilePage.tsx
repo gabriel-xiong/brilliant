@@ -23,16 +23,9 @@ import {
   type StatusGetter,
 } from '../services/practiceAccess';
 import { getEffectiveStatus } from '../services/lessonProgression';
+import { getMasteryLabel } from '../services/masteryLabels';
 import { BAND_COLOR, BAND_LABEL, levelToBand, weakestConcept } from '../services/practiceService';
 import type { UserSummary } from '../services/progressService';
-
-const MASTERY_LABEL: Record<string, string> = {
-  'not-started': 'Not started',
-  'in-progress': 'In progress',
-  'almost-done': 'Almost there',
-  completed: 'Completed',
-  mastered: 'Mastered',
-};
 
 export default function ProfilePage() {
   const { user, signOutUser } = useAuth();
@@ -237,6 +230,15 @@ function ConceptRow({
   bestLevel: number;
   practiceTo: string;
 }) {
+  const statusColor =
+    status === 'mastered' || status === 'proficient'
+      ? 'success'
+      : status === 'completed'
+        ? 'warning'
+        : !status || status === 'not-started'
+          ? 'default'
+          : 'primary';
+
   return (
     <Card variant="outlined" sx={{ border: '1px solid rgba(31,36,48,0.08)', boxShadow: 'none' }}>
       <CardContent sx={{ py: 1.5, '&:last-child': { pb: 1.5 } }}>
@@ -253,8 +255,8 @@ function ConceptRow({
             <Stack direction="row" spacing={0.75} alignItems="center" sx={{ mt: 0.5, flexWrap: 'wrap', gap: 0.5 }}>
               <Chip
                 size="small"
-                label={MASTERY_LABEL[status ?? 'not-started'] ?? 'Not started'}
-                color={status === 'mastered' ? 'success' : !status || status === 'not-started' ? 'default' : 'primary'}
+                label={getMasteryLabel(status ?? undefined)}
+                color={statusColor}
                 variant={!status || status === 'not-started' ? 'outlined' : 'filled'}
                 sx={{ fontWeight: 700, height: 22 }}
               />

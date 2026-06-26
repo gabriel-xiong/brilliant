@@ -39,10 +39,33 @@ function makeLesson(lessonId: string): Lesson {
 }
 
 describe('useLessonState reveal persistence', () => {
-  it('reveals the accepted answer immediately as revealed state', async () => {
-    const lesson = makeLesson('reveal-immediate');
+  it('gates reveal until two unsuccessful attempts', async () => {
+    const lesson = makeLesson('reveal-gated');
     const { result } = renderHook(() => useLessonState(lesson));
     await flush();
+
+    act(() => {
+      result.current.revealAnswer();
+    });
+    expect(result.current.state.feedbackState).toBe('idle');
+    expect(result.current.state.selectedChoice).toBeNull();
+
+    act(() => {
+      result.current.submitAnswer('1/3');
+    });
+    expect(result.current.state.feedbackState).toBe('incorrect');
+    expect(result.current.state.questionView.unsuccessfulAttempts).toBe(1);
+
+    act(() => {
+      result.current.revealAnswer();
+    });
+    expect(result.current.state.feedbackState).toBe('incorrect');
+    expect(result.current.state.selectedChoice).toBe('1/3');
+
+    act(() => {
+      result.current.submitAnswer('1/4');
+    });
+    expect(result.current.state.questionView.unsuccessfulAttempts).toBe(2);
 
     act(() => {
       result.current.revealAnswer();
@@ -52,11 +75,54 @@ describe('useLessonState reveal persistence', () => {
     expect(result.current.state.selectedChoice).toBe('1/2');
   });
 
+  it('unlocks reveal after the strongest hint and resets that unlock on a new wrong answer', async () => {
+    const lesson = makeLesson('reveal-strongest-hint');
+    const { result } = renderHook(() => useLessonState(lesson));
+    await flush();
+
+    act(() => {
+      result.current.submitAnswer('1/3');
+    });
+    act(() => {
+      result.current.markStrongestHintUsed();
+    });
+    expect(result.current.state.questionView.strongestHintUsed).toBe(true);
+    act(() => {
+      result.current.submitAnswer('1/4');
+    });
+    expect(result.current.state.questionView.strongestHintUsed).toBe(false);
+    expect(result.current.state.selectedChoice).toBe('1/4');
+  });
+
+  it('unlocks reveal after the strongest hint is used', async () => {
+    const lesson = makeLesson('reveal-strongest-hint-unlock');
+    const { result } = renderHook(() => useLessonState(lesson));
+    await flush();
+
+    act(() => {
+      result.current.submitAnswer('1/3');
+    });
+    act(() => {
+      result.current.markStrongestHintUsed();
+    });
+    act(() => {
+      result.current.revealAnswer();
+    });
+    expect(result.current.state.feedbackState).toBe('revealed');
+    expect(result.current.state.selectedChoice).toBe('1/2');
+  });
+
   it('restores a revealed answer when returning to the lesson (remount)', async () => {
     const lesson = makeLesson('reveal-remount');
 
     const first = renderHook(() => useLessonState(lesson));
     await flush();
+    act(() => {
+      first.result.current.submitAnswer('1/3');
+    });
+    act(() => {
+      first.result.current.submitAnswer('1/4');
+    });
     act(() => {
       first.result.current.revealAnswer();
     });
@@ -78,6 +144,12 @@ describe('useLessonState reveal persistence', () => {
     const { result } = renderHook(() => useLessonState(lesson));
     await flush();
 
+    act(() => {
+      result.current.submitAnswer('1/3');
+    });
+    act(() => {
+      result.current.submitAnswer('1/4');
+    });
     act(() => {
       result.current.revealAnswer();
     });

@@ -7,13 +7,13 @@ describe('getMasteryLabel', () => {
     expect(getMasteryLabel('in-progress')).toBe('In progress');
     expect(getMasteryLabel('almost-done')).toBe('Almost done');
     expect(getMasteryLabel('completed')).toBe('Needs practice');
+    expect(getMasteryLabel('proficient')).toBe('Proficient');
     expect(getMasteryLabel('mastered')).toBe('Mastered');
   });
 
   it('maps legacy status names into current labels', () => {
     expect(getMasteryLabel('exploring')).toBe('In progress');
     expect(getMasteryLabel('building')).toBe('In progress');
-    expect(getMasteryLabel('proficient')).toBe('Almost done');
     expect(getMasteryLabel('practice-ready')).toBe('Needs practice');
   });
 

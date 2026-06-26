@@ -29,6 +29,7 @@ describe('isPracticeUnlockedForLesson', () => {
     expect(isPracticeUnlockedForLesson(COMPOUND, statusFrom({}))).toBe(false);
     expect(isPracticeUnlockedForLesson(COMPOUND, statusFrom({ [COMPOUND]: 'in-progress' }))).toBe(false);
     expect(isPracticeUnlockedForLesson(COMPOUND, statusFrom({ [COMPOUND]: 'completed' }))).toBe(true);
+    expect(isPracticeUnlockedForLesson(COMPOUND, statusFrom({ [COMPOUND]: 'proficient' }))).toBe(true);
     expect(isPracticeUnlockedForLesson(COMPOUND, statusFrom({ [COMPOUND]: 'mastered' }))).toBe(true);
   });
 });
@@ -42,6 +43,7 @@ describe('isPracticeUnlockedForConcept', () => {
   it('unlocks a concept taught by multiple lessons when ANY is completed', () => {
     expect(isPracticeUnlockedForConcept('single-event', statusFrom({}))).toBe(false);
     expect(isPracticeUnlockedForConcept('single-event', statusFrom({ [INTRO]: 'completed' }))).toBe(true);
+    expect(isPracticeUnlockedForConcept('single-event', statusFrom({ [INTRO]: 'proficient' }))).toBe(true);
     expect(isPracticeUnlockedForConcept('single-event', statusFrom({ [COUNTING]: 'mastered' }))).toBe(true);
   });
 
@@ -80,11 +82,11 @@ describe('isExamUnlocked', () => {
     expect(isExamUnlocked(allButOne)).toBe(false);
   });
 
-  it('unlocks once all lessons are complete (completed or mastered both count)', () => {
+  it('unlocks once all lessons are complete (needs practice, proficient, or mastered all count)', () => {
     const allDone = statusFrom({
       [INTRO]: 'completed',
       [COUNTING]: 'mastered',
-      [COMPOUND]: 'completed',
+      [COMPOUND]: 'proficient',
       [CONDITIONAL]: 'mastered',
       [MUTEX]: 'completed',
       [EXPECTED]: 'mastered',
@@ -118,6 +120,9 @@ describe('completedLessonCount / totalLessonCount', () => {
     expect(completedLessonCount(statusFrom({}))).toBe(0);
     expect(
       completedLessonCount(statusFrom({ [INTRO]: 'mastered', [COUNTING]: 'completed', [COMPOUND]: 'in-progress' }))
+    ).toBe(2);
+    expect(
+      completedLessonCount(statusFrom({ [INTRO]: 'proficient', [COUNTING]: 'completed', [COMPOUND]: 'in-progress' }))
     ).toBe(2);
   });
 });

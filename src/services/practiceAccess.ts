@@ -6,7 +6,7 @@
  * rule:
  *
  *   - Per-concept practice unlocks once the learner has COMPLETED a lesson that
- *     teaches that concept (completed-or-mastered both count — see
+ *     teaches that concept (any completed status counts — see
  *     {@link isLessonCompleted}).
  *   - The final exam unlocks only once EVERY lesson on the course path is
  *     completed.

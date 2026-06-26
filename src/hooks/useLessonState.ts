@@ -25,6 +25,10 @@ export type FeedbackState = 'idle' | 'correct' | 'incorrect' | 'revealed';
 export interface QuestionView {
   /** How many progressive hints to reveal for the active free-response prompt. */
   revealedHints: number;
+  /** Unsuccessful attempts on the current single-stage question. */
+  unsuccessfulAttempts: number;
+  /** Whether the strongest wrong-answer hint was used for the current single-stage answer. */
+  strongestHintUsed: boolean;
   /** Index of the active stage in a multi-stage question. */
   activeStageIndex: number;
   /** Which stages of a multi-stage question have been resolved (correct OR revealed). */
@@ -36,13 +40,21 @@ export interface QuestionView {
    * stage the learner only revealed. Parallel to `resolvedStages` by index.
    */
   revealedStages: boolean[];
+  /** Unsuccessful attempts for each multi-stage question stage. */
+  stageUnsuccessfulAttempts: number[];
+  /** Whether each multi-stage question stage used its strongest wrong-answer hint. */
+  stageStrongestHintUsed: boolean[];
 }
 
 const initialQuestionView: QuestionView = {
   revealedHints: 0,
+  unsuccessfulAttempts: 0,
+  strongestHintUsed: false,
   activeStageIndex: 0,
   resolvedStages: [],
   revealedStages: [],
+  stageUnsuccessfulAttempts: [],
+  stageStrongestHintUsed: [],
 };
 
 function applyVariant(step: LessonStep, variantIndices: Record<string, number>): LessonStep {
@@ -106,6 +118,8 @@ function computeRestoredView(step: LessonStep, stepAttempts: Record<string, Step
           selectedChoice: null,
           questionView: {
             revealedHints: 0,
+            unsuccessfulAttempts: 0,
+            strongestHintUsed: false,
             activeStageIndex: Math.max(count - 1, 0),
             resolvedStages: Array.from({ length: count }, () => true),
             // Persisted progress alone cannot tell which stages were revealed vs
@@ -113,6 +127,8 @@ function computeRestoredView(step: LessonStep, stepAttempts: Record<string, Step
             // reload restores a solved multi-stage as correct. In-session reveal
             // distinctness is preserved via stepViewMemory, not this path.
             revealedStages: Array.from({ length: count }, () => false),
+            stageUnsuccessfulAttempts: Array.from({ length: count }, () => 0),
+            stageStrongestHintUsed: Array.from({ length: count }, () => false),
           },
         };
       }
@@ -298,8 +314,13 @@ export function useLessonState(lesson: Lesson | null, userId?: string, options?:
       const priorFirstTry = priorAttempt ? priorAttempt.correctFirstAttempt : true;
 
       if (!correct) {
-        // Hints are revealed on demand only (see revealHint), never auto-shown
-        // on a wrong attempt.
+        setQuestionView((view) => {
+          const stageUnsuccessfulAttempts = [...view.stageUnsuccessfulAttempts];
+          stageUnsuccessfulAttempts[stageIndex] = (stageUnsuccessfulAttempts[stageIndex] ?? 0) + 1;
+          const stageStrongestHintUsed = [...view.stageStrongestHintUsed];
+          stageStrongestHintUsed[stageIndex] = false;
+          return { ...view, stageUnsuccessfulAttempts, stageStrongestHintUsed };
+        });
         recordAttempt(step.stepId, {
           correctFirstAttempt: false,
           lastResult: 'incorrect',
@@ -319,13 +340,19 @@ export function useLessonState(lesson: Lesson | null, userId?: string, options?:
       setQuestionView((view) => {
         const resolvedStages = [...view.resolvedStages];
         resolvedStages[stageIndex] = true;
+        const stageStrongestHintUsed = [...view.stageStrongestHintUsed];
+        stageStrongestHintUsed[stageIndex] = false;
         // A correctly-answered stage is resolved but NOT revealed; carry forward
         // any earlier stages' reveal flags untouched.
         return {
           revealedHints: 0,
+          unsuccessfulAttempts: view.unsuccessfulAttempts,
+          strongestHintUsed: false,
           activeStageIndex: isLastStage ? stageIndex : stageIndex + 1,
           resolvedStages,
           revealedStages: [...view.revealedStages],
+          stageUnsuccessfulAttempts: [...view.stageUnsuccessfulAttempts],
+          stageStrongestHintUsed,
         };
       });
 
@@ -361,9 +388,16 @@ export function useLessonState(lesson: Lesson | null, userId?: string, options?:
 
       setSelectedChoice(answer);
       setFeedbackState(correct ? 'correct' : 'incorrect');
-
-      // Hints are revealed on demand only (see revealHint); a wrong attempt no
-      // longer auto-reveals the next hint.
+      setQuestionView((view) => ({
+        ...view,
+        strongestHintUsed: false,
+      }));
+      if (!correct) {
+        setQuestionView((view) => ({
+          ...view,
+          unsuccessfulAttempts: view.unsuccessfulAttempts + 1,
+        }));
+      }
 
       const priorAttempt = progress.stepAttempts[step.stepId];
       const firstAttemptCorrect = priorAttempt ? priorAttempt.correctFirstAttempt : correct;
@@ -376,24 +410,6 @@ export function useLessonState(lesson: Lesson | null, userId?: string, options?:
     },
     [effectiveStep, currentStepIndex, lesson, progress.stepAttempts, recordAttempt, submitMultiStage]
   );
-
-  /** Reveal the next progressive hint for the active free-response context. */
-  const revealHint = useCallback(() => {
-    if (!effectiveStep || effectiveStep.type !== 'problem') return;
-    const step = effectiveStep as ProblemStep;
-    const format = problemFormat(step);
-    let total = 0;
-    if (format === 'multi-stage') {
-      total = step.stages?.[questionView.activeStageIndex]?.hints?.length ?? 0;
-    } else if (isNumericEntryFormat(format) || format === 'sort' || format === 'order') {
-      total = step.hints?.length ?? 0;
-    }
-    if (total === 0) return;
-    setQuestionView((view) => ({
-      ...view,
-      revealedHints: Math.min(view.revealedHints + 1, total),
-    }));
-  }, [effectiveStep, questionView.activeStageIndex]);
 
   /**
    * Reveal the accepted answer for the active free-response context. Revealing
@@ -409,13 +425,16 @@ export function useLessonState(lesson: Lesson | null, userId?: string, options?:
       const stages = step.stages ?? [];
       const stageIndex = questionView.activeStageIndex;
       const stage = stages[stageIndex];
-      if (!stage || stage.format !== 'free-response') return;
+      if (!stage) return;
+      if ((questionView.stageUnsuccessfulAttempts[stageIndex] ?? 0) < 2 && !questionView.stageStrongestHintUsed[stageIndex]) {
+        return;
+      }
 
       const isLastStage = stageIndex === stages.length - 1;
       const isFinalStep = currentStepIndex === lesson.steps.length - 1;
       const priorAttempt = progress.stepAttempts[step.stepId];
 
-      setSelectedChoice(stage.acceptedAnswer ?? '');
+      setSelectedChoice(stage.format === 'free-response' ? stage.acceptedAnswer ?? '' : stage.answer ?? '');
       setFeedbackState('revealed');
       recordAttempt(step.stepId, {
         correctFirstAttempt: false,
@@ -432,9 +451,13 @@ export function useLessonState(lesson: Lesson | null, userId?: string, options?:
         revealedStages[stageIndex] = true;
         return {
           revealedHints: 0,
+          unsuccessfulAttempts: view.unsuccessfulAttempts,
+          strongestHintUsed: view.strongestHintUsed,
           activeStageIndex: isLastStage ? stageIndex : stageIndex + 1,
           resolvedStages,
           revealedStages,
+          stageUnsuccessfulAttempts: [...view.stageUnsuccessfulAttempts],
+          stageStrongestHintUsed: [...view.stageStrongestHintUsed],
         };
       });
 
@@ -447,6 +470,7 @@ export function useLessonState(lesson: Lesson | null, userId?: string, options?:
 
     const interaction = interactionSolution(step, format);
     if (interaction !== null) {
+      if (questionView.unsuccessfulAttempts < 2 && !questionView.strongestHintUsed) return;
       const isFinalStep = currentStepIndex === lesson.steps.length - 1;
       setSelectedChoice(interaction);
       setFeedbackState('revealed');
@@ -459,6 +483,7 @@ export function useLessonState(lesson: Lesson | null, userId?: string, options?:
     }
 
     if (isNumericEntryFormat(format)) {
+      if (questionView.unsuccessfulAttempts < 2 && !questionView.strongestHintUsed) return;
       const isFinalStep = currentStepIndex === lesson.steps.length - 1;
       setSelectedChoice(step.acceptedAnswer ?? '');
       setFeedbackState('revealed');
@@ -468,7 +493,35 @@ export function useLessonState(lesson: Lesson | null, userId?: string, options?:
         completed: isFinalStep,
       });
     }
-  }, [lesson, effectiveStep, questionView.activeStageIndex, progress.stepAttempts, currentStepIndex, recordAttempt]);
+    if (format === 'multiple-choice') {
+      if (questionView.unsuccessfulAttempts < 2 && !questionView.strongestHintUsed) return;
+      const isFinalStep = currentStepIndex === lesson.steps.length - 1;
+      setSelectedChoice(step.answer ?? '');
+      setFeedbackState('revealed');
+      recordAttempt(step.stepId, {
+        correctFirstAttempt: false,
+        lastResult: 'correct',
+        completed: isFinalStep,
+      });
+    }
+  }, [lesson, effectiveStep, questionView, progress.stepAttempts, currentStepIndex, recordAttempt]);
+
+  const markStrongestHintUsed = useCallback(() => {
+    if (!effectiveStep || effectiveStep.type !== 'problem') return;
+    const step = effectiveStep as ProblemStep;
+    const format = problemFormat(step);
+    if (format === 'multi-stage') {
+      const stageIndex = questionView.activeStageIndex;
+      setQuestionView((view) => {
+        const stageStrongestHintUsed = [...view.stageStrongestHintUsed];
+        stageStrongestHintUsed[stageIndex] = true;
+        return { ...view, stageStrongestHintUsed };
+      });
+      return;
+    }
+
+    setQuestionView((view) => ({ ...view, strongestHintUsed: true }));
+  }, [effectiveStep, questionView.activeStageIndex]);
 
   const restoreFeedbackForStep = useCallback(
     (stepIndex: number) => {
@@ -605,8 +658,8 @@ export function useLessonState(lesson: Lesson | null, userId?: string, options?:
   return {
     state,
     submitAnswer,
-    revealHint,
     revealAnswer,
+    markStrongestHintUsed,
     advanceStep,
     goToPreviousStep,
     goToNextStep,

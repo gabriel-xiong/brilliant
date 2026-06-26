@@ -3,8 +3,9 @@
 The AI compute (`aiGenerate`) runs as a Vercel serverless function at
 `api/aiGenerate.ts`. Firebase Hosting, Auth, and Firestore stay on the free
 Spark plan — only the compute moved to Vercel (the Firebase Blaze plan is not
-available). The client calls the function via `fetch` with the signed-in user's
-Firebase ID token as a `Bearer` header.
+available). The client calls the function via `fetch`; signed-in users include a
+Firebase ID token as a `Bearer` header, while signed-out demo users use a tighter
+anonymous rate-limit bucket.
 
 ## 1. Set server env vars on Vercel
 
@@ -47,5 +48,7 @@ Deploy the rebuilt client to Firebase Hosting as usual (`npm run firebase:deploy
 
 ## Graceful fallback
 
-When `VITE_AI_ENDPOINT` is blank (or the user is signed out), the client returns
-`null` from every AI call and uses the deterministic generator — nothing breaks.
+When `VITE_AI_ENDPOINT` is blank, the client returns `null` from every AI call
+and uses the deterministic generator — nothing breaks. Signed-out users can call
+AI when the endpoint is configured, but the server caps anonymous traffic more
+tightly.

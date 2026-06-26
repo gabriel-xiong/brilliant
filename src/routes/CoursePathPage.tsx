@@ -168,8 +168,11 @@ export default function CoursePathPage() {
     [lessons, userSummary, user?.uid]
   );
 
+  const needsPracticeCount = states.filter((state) => state.status === 'completed').length;
+  const proficientCount = states.filter((state) => state.status === 'proficient').length;
   const masteredCount = states.filter((state) => state.status === 'mastered').length;
   const completedCount = states.filter((state) => state.completed).length;
+  const solidCount = proficientCount + masteredCount;
   const currentState = states.find((state) => state.isCurrent);
   const allCompleted = states.length > 0 && completedCount === states.length;
   const allMastered = states.length > 0 && masteredCount === states.length;
@@ -240,16 +243,32 @@ export default function CoursePathPage() {
         </Stack>
       </Stack>
 
-      <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1.5, flexWrap: 'wrap', gap: 1 }}>
+      <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 2, flexWrap: 'wrap', gap: 1 }}>
         <Chip
           label={`${masteredCount} mastered`}
           color={masteredCount > 0 ? 'success' : 'default'}
           size="small"
           sx={{ fontWeight: 700 }}
         />
+        <Chip
+          label={`${solidCount} proficient or mastered`}
+          color={solidCount > 0 ? 'primary' : 'default'}
+          size="small"
+          variant="outlined"
+          sx={{ fontWeight: 700 }}
+        />
+        {needsPracticeCount > 0 && (
+          <Chip
+            label={`${needsPracticeCount} need practice`}
+            color="warning"
+            size="small"
+            variant="outlined"
+            sx={{ fontWeight: 700 }}
+          />
+        )}
         <Chip label={`${completedCount} of ${states.length} lessons cleared`} size="small" variant="outlined" />
         {currentState && (
-          <Typography variant="body2" color="text.secondary">
+          <Typography variant="body2" color="text.secondary" sx={{ lineHeight: 1.4 }}>
             Up next: <strong>{currentState.lesson.title}</strong>
           </Typography>
         )}
@@ -266,13 +285,14 @@ export default function CoursePathPage() {
         sx={{ mt: 1.5, flexWrap: 'wrap', gap: 1.5 }}
       >
         <LegendDot color="linear-gradient(160deg, #18867e 0%, #0f6f68 100%)" label="Ready to play" />
-        <LegendDot color="linear-gradient(160deg, #43c59e 0%, #1f9d74 100%)" label="Completed" />
+        <LegendDot color="linear-gradient(160deg, #ffb457 0%, #e6782e 100%)" label="Needs practice" />
+        <LegendDot color="linear-gradient(160deg, #43c59e 0%, #1f9d74 100%)" label="Proficient" />
         <LegendDot color="linear-gradient(160deg, #ffd86b 0%, #f5a623 100%)" label="Mastered" />
         <LegendDot color="linear-gradient(160deg, #cdd3dc 0%, #aab2bf 100%)" label="Locked" />
       </Stack>
 
       <Typography variant="caption" color="text.secondary" sx={{ display: 'block', textAlign: 'center', mt: 1 }}>
-        Mastery threshold: complete a lesson with 80%+ first-try accuracy. Completing a lesson unlocks the next one along the path.
+        Proficient: complete a lesson with 80%+ first-try accuracy. Mastered: 90%+. Completing a lesson still unlocks the next one along the path.
       </Typography>
     </Container>
   );

@@ -1,8 +1,14 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { LessonStepRenderer } from './LessonStepRenderer';
 import type { ConceptStep, ProblemStep } from '../../models/lesson';
+import type { QuestionView } from '../../hooks/useLessonState';
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
+});
 
 const problemStep: ProblemStep = {
   stepId: 'problem-coin-probability',
@@ -114,6 +120,32 @@ describe('LessonStepRenderer concept coin-probability line', () => {
     expect(formulaToken).toHaveClass('numeric');
     expect(text).toContain('= 50%');
   });
+
+  it('shows concept re-explanation as a compact in-card note when AI is enabled', async () => {
+    vi.stubEnv('VITE_AI_ENABLED', 'true');
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('offline')));
+    const user = userEvent.setup();
+
+    render(
+      <LessonStepRenderer
+        step={coinConceptStep}
+        feedbackState="idle"
+        selectedChoice={null}
+        onSubmitAnswer={vi.fn()}
+        onAdvance={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText(/want a different angle/i)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /explain this another way/i }));
+
+    expect(await screen.findByText(/probability as a share/i)).toBeInTheDocument();
+    const note = await screen.findByRole('note');
+    expect(note).toHaveTextContent(/another way to see it/i);
+    expect(note).toHaveTextContent(/probability as a share/i);
+    expect(screen.queryByText('AI')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /try another wording/i })).toBeInTheDocument();
+  });
 });
 
 const freeResponseStep: ProblemStep = {
@@ -130,33 +162,58 @@ const freeResponseStep: ProblemStep = {
   incorrectFeedback: 'Compare one target face against all six.',
 };
 
-describe('LessonStepRenderer free-response reveal flow', () => {
-  it('does not show hints until the learner reveals them on demand', async () => {
-    const user = userEvent.setup();
-    const onRevealHint = vi.fn();
+function questionView(overrides: Partial<QuestionView> = {}): QuestionView {
+  return {
+    revealedHints: 0,
+    unsuccessfulAttempts: 0,
+    strongestHintUsed: false,
+    activeStageIndex: 0,
+    resolvedStages: [],
+    revealedStages: [],
+    stageUnsuccessfulAttempts: [],
+    stageStrongestHintUsed: [],
+    ...overrides,
+  };
+}
 
+describe('LessonStepRenderer free-response reveal flow', () => {
+  it('hides Reveal answer before any unsuccessful attempt', () => {
     render(
       <LessonStepRenderer
         step={freeResponseStep}
         feedbackState="idle"
         selectedChoice={null}
-        questionView={{ revealedHints: 0, activeStageIndex: 0, resolvedStages: [], revealedStages: [] }}
+        questionView={questionView()}
         onSubmitAnswer={vi.fn()}
         onAdvance={vi.fn()}
-        onRevealHint={onRevealHint}
         onRevealAnswer={vi.fn()}
       />
     );
 
-    // No hint text is visible before the learner asks for one.
     expect(screen.queryByText(/count the faces/i)).not.toBeInTheDocument();
-
-    const revealHintButton = screen.getByRole('button', { name: /reveal a hint/i });
-    await user.click(revealHintButton);
-    expect(onRevealHint).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('button', { name: /reveal.*hint/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /reveal answer/i })).not.toBeInTheDocument();
   });
 
-  it('offers Reveal answer only after every hint is revealed', async () => {
+  it('keeps Reveal answer hidden after one unsuccessful attempt without exposing the gate', () => {
+    render(
+      <LessonStepRenderer
+        step={freeResponseStep}
+        feedbackState="incorrect"
+        selectedChoice="1/2"
+        questionView={questionView({ unsuccessfulAttempts: 1 })}
+        onSubmitAnswer={vi.fn()}
+        onAdvance={vi.fn()}
+        onRevealAnswer={vi.fn()}
+      />
+    );
+
+    expect(screen.queryByRole('button', { name: /reveal answer/i })).not.toBeInTheDocument();
+    expect(screen.queryByText(/unlock reveal answer/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/try once more/i)).not.toBeInTheDocument();
+  });
+
+  it('offers Reveal answer after two unsuccessful attempts', async () => {
     const user = userEvent.setup();
     const onRevealAnswer = vi.fn();
 
@@ -165,21 +222,70 @@ describe('LessonStepRenderer free-response reveal flow', () => {
         step={freeResponseStep}
         feedbackState="incorrect"
         selectedChoice="1/2"
-        questionView={{ revealedHints: 2, activeStageIndex: 0, resolvedStages: [], revealedStages: [] }}
+        questionView={questionView({ unsuccessfulAttempts: 2 })}
         onSubmitAnswer={vi.fn()}
         onAdvance={vi.fn()}
-        onRevealHint={vi.fn()}
         onRevealAnswer={onRevealAnswer}
       />
     );
 
-    // Both hints are now visible.
-    expect(screen.getByText(/count the faces/i)).toBeInTheDocument();
-    expect(screen.getByText(/one target out of six/i)).toBeInTheDocument();
+    expect(screen.queryByText(/count the faces/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/one target out of six/i)).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /reveal.*hint/i })).not.toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: /reveal answer/i }));
     expect(onRevealAnswer).toHaveBeenCalledTimes(1);
+  });
+
+  it('offers Reveal answer after the strongest hint is used', async () => {
+    const user = userEvent.setup();
+    const onRevealAnswer = vi.fn();
+
+    render(
+      <LessonStepRenderer
+        step={freeResponseStep}
+        feedbackState="incorrect"
+        selectedChoice="1/2"
+        questionView={questionView({ strongestHintUsed: true })}
+        onSubmitAnswer={vi.fn()}
+        onAdvance={vi.fn()}
+        onRevealAnswer={onRevealAnswer}
+      />
+    );
+
+    await user.click(screen.getByRole('button', { name: /reveal answer/i }));
+    expect(onRevealAnswer).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps stronger hints visible as a stacked history', async () => {
+    vi.stubEnv('VITE_AI_ENABLED', 'true');
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('offline')));
+    const user = userEvent.setup();
+
+    render(
+      <LessonStepRenderer
+        step={freeResponseStep}
+        feedbackState="incorrect"
+        selectedChoice="1/2"
+        questionView={questionView({ unsuccessfulAttempts: 1 })}
+        onSubmitAnswer={vi.fn()}
+        onAdvance={vi.fn()}
+        onRevealAnswer={vi.fn()}
+      />
+    );
+
+    await user.click(screen.getByRole('button', { name: /get a hint on your answer/i }));
+    expect(await screen.findByText('Hint 1')).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: /give me a stronger hint/i })).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /give me a stronger hint/i }));
+    expect(await screen.findByText('Hint 2')).toBeInTheDocument();
+    expect(screen.getByText('Hint 1')).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: /give me a stronger hint/i })).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /give me a stronger hint/i }));
+    expect(await screen.findByText('Hint 3')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /give me a stronger hint/i })).not.toBeInTheDocument();
   });
 
   it('shows a generic non-revealing placeholder (never the accepted answer) for a fractional question', () => {
@@ -188,10 +294,9 @@ describe('LessonStepRenderer free-response reveal flow', () => {
         step={freeResponseStep}
         feedbackState="idle"
         selectedChoice={null}
-        questionView={{ revealedHints: 0, activeStageIndex: 0, resolvedStages: [], revealedStages: [] }}
+        questionView={questionView()}
         onSubmitAnswer={vi.fn()}
         onAdvance={vi.fn()}
-        onRevealHint={vi.fn()}
         onRevealAnswer={vi.fn()}
       />
     );
@@ -209,10 +314,9 @@ describe('LessonStepRenderer free-response reveal flow', () => {
         step={freeResponseStep}
         feedbackState="revealed"
         selectedChoice="1/6"
-        questionView={{ revealedHints: 2, activeStageIndex: 0, resolvedStages: [], revealedStages: [] }}
+        questionView={questionView({ revealedHints: 2, unsuccessfulAttempts: 2 })}
         onSubmitAnswer={vi.fn()}
         onAdvance={vi.fn()}
-        onRevealHint={vi.fn()}
         onRevealAnswer={vi.fn()}
       />
     );
@@ -252,6 +356,41 @@ const multiStageStep: ProblemStep = {
 };
 
 describe('LessonStepRenderer multi-stage reveal status', () => {
+  it('gates Reveal answer per active stage until that stage has two unsuccessful attempts', async () => {
+    const user = userEvent.setup();
+    const onRevealAnswer = vi.fn();
+    const { rerender } = render(
+      <LessonStepRenderer
+        step={multiStageStep}
+        feedbackState="incorrect"
+        selectedChoice="1"
+        questionView={questionView({ stageUnsuccessfulAttempts: [1] })}
+        onSubmitAnswer={vi.fn()}
+        onAdvance={vi.fn()}
+        onRevealAnswer={onRevealAnswer}
+      />
+    );
+
+    expect(screen.queryByRole('button', { name: /reveal answer/i })).not.toBeInTheDocument();
+    expect(screen.queryByText(/unlock reveal answer/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/try once more/i)).not.toBeInTheDocument();
+
+    rerender(
+      <LessonStepRenderer
+        step={multiStageStep}
+        feedbackState="incorrect"
+        selectedChoice="3"
+        questionView={questionView({ stageUnsuccessfulAttempts: [2] })}
+        onSubmitAnswer={vi.fn()}
+        onAdvance={vi.fn()}
+        onRevealAnswer={onRevealAnswer}
+      />
+    );
+
+    await user.click(screen.getByRole('button', { name: /reveal answer/i }));
+    expect(onRevealAnswer).toHaveBeenCalledTimes(1);
+  });
+
   it('renders a revealed stage as revealed, never as correct', () => {
     // Part 1 was revealed (resolved + revealed) and is now locked behind the
     // active Part 2, which was also revealed.
@@ -262,13 +401,16 @@ describe('LessonStepRenderer multi-stage reveal status', () => {
         selectedChoice="2/6"
         questionView={{
           revealedHints: 0,
+          unsuccessfulAttempts: 0,
+          strongestHintUsed: false,
           activeStageIndex: 1,
           resolvedStages: [true, true],
           revealedStages: [true, true],
+          stageUnsuccessfulAttempts: [2, 2],
+          stageStrongestHintUsed: [false, false],
         }}
         onSubmitAnswer={vi.fn()}
         onAdvance={vi.fn()}
-        onRevealHint={vi.fn()}
         onRevealAnswer={vi.fn()}
       />
     );
@@ -291,13 +433,16 @@ describe('LessonStepRenderer multi-stage reveal status', () => {
         selectedChoice={null}
         questionView={{
           revealedHints: 0,
+          unsuccessfulAttempts: 0,
+          strongestHintUsed: false,
           activeStageIndex: 1,
           resolvedStages: [true, false],
           revealedStages: [false, false],
+          stageUnsuccessfulAttempts: [0, 0],
+          stageStrongestHintUsed: [false, false],
         }}
         onSubmitAnswer={vi.fn()}
         onAdvance={vi.fn()}
-        onRevealHint={vi.fn()}
         onRevealAnswer={vi.fn()}
       />
     );
@@ -306,6 +451,288 @@ describe('LessonStepRenderer multi-stage reveal status', () => {
     expect(screen.getByText('Part 1 ✓')).toBeInTheDocument();
     expect(screen.queryByText('Part 1 revealed')).not.toBeInTheDocument();
     expect(screen.queryByText(/answer revealed/i)).not.toBeInTheDocument();
+  });
+});
+
+const sortStep: ProblemStep = {
+  stepId: 'problem-sort-events',
+  type: 'problem',
+  format: 'sort',
+  title: 'Sort the events',
+  question: 'Place each event in the best bucket.',
+  sortItems: [
+    { id: 'heads', label: 'Flip heads' },
+    { id: 'seven', label: 'Roll a 7 on a six-face die' },
+  ],
+  sortBuckets: [
+    { id: 'possible', label: 'Possible' },
+    { id: 'impossible', label: 'Impossible' },
+  ],
+  sortSolution: { heads: 'possible', seven: 'impossible' },
+};
+
+const orderStep: ProblemStep = {
+  stepId: 'problem-order-events',
+  type: 'problem',
+  format: 'order',
+  title: 'Order the events',
+  question: 'Order these from least likely to most likely.',
+  orderItems: [
+    { id: 'rare', label: 'Being struck by lightning' },
+    { id: 'weekend', label: 'A random day is a weekend' },
+    { id: 'sunrise', label: 'The sun rises tomorrow' },
+  ],
+  orderSolution: ['rare', 'weekend', 'sunrise'],
+};
+
+const duplicateFactChoiceStep: ProblemStep = {
+  stepId: 'problem-even-impossible',
+  type: 'problem',
+  title: 'Check the claim',
+  question: 'On one fair die, A = even numbers. Which claim is wrong?',
+  choices: [
+    { label: 'Because even numbers are impossible.', value: 'even-impossible' },
+    { label: 'Because even numbers are 2, 4, and 6.', value: 'even-possible' },
+  ],
+  answer: 'even-possible',
+  explanation: 'Even numbers are possible on a six-sided die.',
+  incorrectFeedback: 'Check the actual die faces.',
+};
+
+const limitedEvidenceChoiceStep: ProblemStep = {
+  stepId: 'problem-limited-evidence',
+  type: 'problem',
+  title: 'Judge the evidence',
+  question: 'Face 4 lands only 6 times in 60 spins. Which interpretation of this gap is best?',
+  choices: [
+    { label: 'The wheel must be unfair or broken.', value: 'unfair' },
+    { label: 'Small samples can wobble, so collect more evidence before judging.', value: 'wobble' },
+  ],
+  answer: 'wobble',
+  explanation: 'Small samples can land away from the expected count without proving the wheel changed.',
+  incorrectFeedback: 'A short run is limited evidence.',
+};
+
+const selectedClaim = '8/12 is actually right; the grid is just missing one of the winning pairs.';
+
+const additiveChoiceStep: ProblemStep = {
+  stepId: 'problem-additive-mcq-hints',
+  type: 'problem',
+  title: 'Check the count',
+  question: 'The grid shows 12 equally likely pairs. Which option best checks the probability claim?',
+  choices: [
+    { label: selectedClaim, value: 'missing-pair' },
+    { label: '6/12 is right because there are six winning pairs in the visible grid.', value: 'six-visible' },
+    { label: 'The grid cannot be used for this problem.', value: 'ignore-grid' },
+  ],
+  answer: 'six-visible',
+  explanation: 'The visible grid count is the evidence for the fraction.',
+  incorrectFeedback: 'Check the concrete count of winning pairs in the grid before trusting that fraction.',
+};
+
+describe('LessonStepRenderer AI feedback for interaction questions', () => {
+  it('does not offer a stronger MCQ hint when the next hint would repeat the same fact', async () => {
+    vi.stubEnv('VITE_AI_ENABLED', 'true');
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('offline')));
+    const user = userEvent.setup();
+
+    render(
+      <LessonStepRenderer
+        step={duplicateFactChoiceStep}
+        feedbackState="incorrect"
+        selectedChoice="even-impossible"
+        onSubmitAnswer={vi.fn()}
+        onAdvance={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole('button', { name: /get a hint on your answer/i }));
+
+    expect(await screen.findByText('Hint 1')).toBeInTheDocument();
+    expect(await screen.findByText(/even numbers are possible/i)).toBeInTheDocument();
+    expect(screen.queryByText('Hint 2')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /give me a stronger hint/i })).not.toBeInTheDocument();
+  });
+
+  it('caps limited-evidence MCQ hints at Hint 2 instead of padding to Hint 3', async () => {
+    vi.stubEnv('VITE_AI_ENABLED', 'true');
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('offline')));
+    const user = userEvent.setup();
+
+    render(
+      <LessonStepRenderer
+        step={limitedEvidenceChoiceStep}
+        feedbackState="incorrect"
+        selectedChoice="unfair"
+        onSubmitAnswer={vi.fn()}
+        onAdvance={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole('button', { name: /get a hint on your answer/i }));
+    expect(await screen.findByText('Hint 1')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /give me a stronger hint/i })).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /give me a stronger hint/i }));
+    expect(await screen.findByText('Hint 2')).toBeInTheDocument();
+    expect(screen.queryByText('Hint 3')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /give me a stronger hint/i })).not.toBeInTheDocument();
+  });
+
+  it('renders MCQ stronger hints without repeating the selected-option claim', async () => {
+    vi.stubEnv('VITE_AI_ENABLED', 'true');
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('offline')));
+    const user = userEvent.setup();
+
+    render(
+      <LessonStepRenderer
+        step={additiveChoiceStep}
+        feedbackState="incorrect"
+        selectedChoice="missing-pair"
+        onSubmitAnswer={vi.fn()}
+        onAdvance={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole('button', { name: /get a hint on your answer/i }));
+    await screen.findByText('Hint 1');
+    const hint1Note = screen.getAllByRole('note').find((note) => note.textContent?.includes('Hint 1'));
+    expect(hint1Note).toBeDefined();
+    expect(hint1Note!).toHaveTextContent(selectedClaim);
+
+    await user.click(screen.getByRole('button', { name: /give me a stronger hint/i }));
+    await screen.findByText('Hint 2');
+    const hint2Note = screen.getAllByRole('note').find((note) => note.textContent?.includes('Hint 2'));
+    expect(hint2Note).toBeDefined();
+    expect(hint2Note!).toHaveTextContent(/exact outcome or count/i);
+    expect(hint2Note!).not.toHaveTextContent(selectedClaim);
+    expect(hint2Note!).not.toHaveTextContent(/your selected option says/i);
+
+    await user.click(screen.getByRole('button', { name: /give me a stronger hint/i }));
+    await screen.findByText('Hint 3');
+    const hint3Note = screen.getAllByRole('note').find((note) => note.textContent?.includes('Hint 3'));
+    expect(hint3Note).toBeDefined();
+    expect(hint3Note!).toHaveTextContent(/use this test/i);
+    expect(hint3Note!).not.toHaveTextContent(selectedClaim);
+    expect(hint3Note!).not.toHaveTextContent(/your selected option says/i);
+
+    const visibleHintText = screen.getAllByRole('note').map((note) => note.textContent ?? '').join(' ');
+    expect(visibleHintText.match(new RegExp(selectedClaim.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'))?.length).toBe(1);
+  });
+
+  it('offers answer-aware AI feedback after an incorrect sort interaction', async () => {
+    vi.stubEnv('VITE_AI_ENABLED', 'true');
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('offline')));
+    const user = userEvent.setup();
+
+    render(
+      <LessonStepRenderer
+        step={sortStep}
+        feedbackState="incorrect"
+        selectedChoice='{"heads":"impossible","seven":"possible"}'
+        onSubmitAnswer={vi.fn()}
+        onAdvance={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole('button', { name: /get a hint on your answer/i }));
+
+    expect(await screen.findByText(/re-check "flip heads"/i)).toBeInTheDocument();
+    expect(screen.queryByText(/does not read like a probability value/i)).not.toBeInTheDocument();
+  });
+
+  it('clears an old AI nudge when the submitted sort answer changes', async () => {
+    vi.stubEnv('VITE_AI_ENABLED', 'true');
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('offline')));
+    const user = userEvent.setup();
+
+    const { rerender } = render(
+      <LessonStepRenderer
+        step={sortStep}
+        feedbackState="incorrect"
+        selectedChoice='{"heads":"impossible","seven":"possible"}'
+        onSubmitAnswer={vi.fn()}
+        onAdvance={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole('button', { name: /get a hint on your answer/i }));
+    expect(await screen.findByText(/re-check "flip heads"/i)).toBeInTheDocument();
+
+    rerender(
+      <LessonStepRenderer
+        step={sortStep}
+        feedbackState="incorrect"
+        selectedChoice='{"heads":"possible","seven":"possible"}'
+        onSubmitAnswer={vi.fn()}
+        onAdvance={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /get a hint on your answer/i })).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/re-check "flip heads"/i)).not.toBeInTheDocument();
+  });
+
+  it('offers answer-aware AI feedback after an incorrect order interaction', async () => {
+    vi.stubEnv('VITE_AI_ENABLED', 'true');
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('offline')));
+    const user = userEvent.setup();
+
+    render(
+      <LessonStepRenderer
+        step={orderStep}
+        feedbackState="incorrect"
+        selectedChoice='["sunrise","weekend","rare"]'
+        onSubmitAnswer={vi.fn()}
+        onAdvance={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole('button', { name: /get a hint on your answer/i }));
+
+    expect(await screen.findByText(/relative order of "the sun rises tomorrow" and "a random day is a weekend"/i)).toBeInTheDocument();
+    expect(screen.queryByText(/does not read like a probability value/i)).not.toBeInTheDocument();
+  });
+
+  it('renders stronger order hints as additive guidance instead of repeating prior hints', async () => {
+    vi.stubEnv('VITE_AI_ENABLED', 'true');
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('offline')));
+    const user = userEvent.setup();
+
+    render(
+      <LessonStepRenderer
+        step={orderStep}
+        feedbackState="incorrect"
+        selectedChoice='["sunrise","weekend","rare"]'
+        onSubmitAnswer={vi.fn()}
+        onAdvance={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole('button', { name: /get a hint on your answer/i }));
+    const hint1 = await screen.findByText(/relative order of "the sun rises tomorrow" and "a random day is a weekend"/i);
+    const hint1Text = hint1.textContent ?? '';
+
+    await user.click(screen.getByRole('button', { name: /give me a stronger hint/i }));
+    await screen.findByText(/scale labels/i);
+
+    const hint2Note = screen.getAllByRole('note').find((note) => note.textContent?.includes('Hint 2'));
+    expect(hint2Note).toBeDefined();
+    expect(hint2Note).toHaveTextContent(/scale labels/i);
+    expect(hint2Note?.textContent).not.toContain(hint1Text);
+    const hint2Text = hint2Note?.textContent ?? '';
+
+    await user.click(screen.getByRole('button', { name: /give me a stronger hint/i }));
+    await screen.findByText(/lower-chance event left/i);
+
+    const hint3Note = screen.getAllByRole('note').find((note) => note.textContent?.includes('Hint 3'));
+    expect(hint3Note).toBeDefined();
+    expect(hint3Note).toHaveTextContent(/compare neighboring events/i);
+    expect(hint3Note).toHaveTextContent(/sweep through the list/i);
+    expect(hint3Note?.textContent).not.toContain(hint1Text);
+    expect(hint3Note?.textContent).not.toContain(hint2Text);
   });
 });
 

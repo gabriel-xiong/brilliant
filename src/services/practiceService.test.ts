@@ -3,9 +3,12 @@ import {
   MAX_LEVEL,
   MIN_LEVEL,
   bandToLevel,
+  difficultyForStatus,
   levelForConcept,
   levelToBand,
   nextLevel,
+  normalizePracticeConceptSelection,
+  parseConceptIds,
 } from './practiceService';
 
 describe('nextLevel — adaptive stepper', () => {
@@ -66,8 +69,43 @@ describe('band <-> level seeding', () => {
     expect(bandToLevel('challenge')).toBe(8);
   });
 
+  it('starts proficient lessons in core practice, below mastered challenge work', () => {
+    expect(difficultyForStatus('completed')).toBe('core');
+    expect(difficultyForStatus('proficient')).toBe('core');
+    expect(difficultyForStatus('mastered')).toBe('challenge');
+  });
+
   it('seeds a signed-out / empty learner at the lowest level', () => {
     expect(levelForConcept('single-event', null)).toBe(1);
     expect(levelForConcept('bayes', undefined)).toBe(1);
+  });
+});
+
+describe('multi-topic practice selection', () => {
+  it('parses valid concept ids while dropping invalid values and duplicates', () => {
+    expect(parseConceptIds(['single-event', 'not-a-concept', 'complement', 'single-event', 4])).toEqual([
+      'single-event',
+      'complement',
+    ]);
+  });
+
+  it('keeps only unlocked requested concepts', () => {
+    expect(
+      normalizePracticeConceptSelection(
+        ['single-event', 'bayes', 'complement'],
+        ['single-event', 'complement'],
+        'single-event',
+      ),
+    ).toEqual(['single-event', 'complement']);
+  });
+
+  it('falls back to the route/default concept when nothing requested is usable', () => {
+    expect(normalizePracticeConceptSelection(['bayes'], ['single-event', 'complement'], 'complement')).toEqual([
+      'complement',
+    ]);
+  });
+
+  it('falls back to the first unlocked concept if the default is locked', () => {
+    expect(normalizePracticeConceptSelection([], ['single-event', 'complement'], 'bayes')).toEqual(['single-event']);
   });
 });

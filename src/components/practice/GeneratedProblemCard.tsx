@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Box,
   Button,
@@ -9,8 +9,8 @@ import {
   TextField,
   Typography,
 } from '@mui/material';
-import { CONCEPT_LABELS } from '../../services/ai/conceptSchemas';
-import type { GeneratedProblem } from '../../services/ai/types';
+import { CONCEPT_LABELS, solveConcept } from '../../services/ai/conceptSchemas';
+import type { GeneratedProblem, SolverResult } from '../../services/ai/types';
 import { numericAnswersMatch } from '../../services/answerCheck';
 import { aiExplainWrongAnswer, aiWorkedSolution, isAIEnabled } from '../../services/ai/aiService';
 import { BAND_COLOR, BAND_LABEL, bandToLevel, levelToBand } from '../../services/practiceService';
@@ -37,12 +37,42 @@ export interface GeneratedProblemCardProps {
 
 type Phase = 'idle' | 'correct' | 'incorrect';
 
+function safeSolution(problem: GeneratedProblem): SolverResult {
+  if (problem.solution?.fraction && Array.isArray(problem.solution.steps)) {
+    return problem.solution;
+  }
+  try {
+    return solveConcept(problem.conceptId, problem.params ?? {});
+  } catch {
+    return {
+      fraction: problem.acceptedAnswer ?? '0',
+      decimal: Number(problem.acceptedDecimal ?? 0),
+      steps: [],
+    };
+  }
+}
+
+function lowerFirst(value: string): string {
+  return value ? `${value.charAt(0).toLowerCase()}${value.slice(1)}` : value;
+}
+
+function formatWrongAnswerFeedback(explanation: string, solutionSteps: string[]): string {
+  const diagnostic =
+    explanation
+      .trim()
+      .replace(/^your answer was wrong because\s+/i, '')
+      .replace(/\s+/g, ' ') || 'the setup needs another look.';
+  const fullSolution = solutionSteps.map((step) => `• ${step}`).join('\n');
+  return `Your answer was wrong because ${lowerFirst(diagnostic)}\n\nFull solution:\n${fullSolution}`;
+}
+
 /**
  * Renders one deterministically-generated problem and grades it against the
  * solver's exact answer using the same tolerant numeric matcher the lessons
- * use. Wrong answers can be explained by the AI (grounded in the solver's
- * ground-truth answer); a worked solution is available on demand. Works fully
- * with AI disabled — the panels then show the deterministic fallback prose.
+ * use. Wrong practice answers can reveal full feedback because this surface has
+ * no layered retries; correct answers can still show the worked solution on
+ * demand. Works fully with AI disabled — the panels then show deterministic
+ * fallback prose.
  */
 export function GeneratedProblemCard({
   problem,
@@ -53,12 +83,14 @@ export function GeneratedProblemCard({
   onNext,
 }: GeneratedProblemCardProps) {
   const [draft, setDraft] = useState('');
+  const [submittedAnswer, setSubmittedAnswer] = useState('');
   const [phase, setPhase] = useState<Phase>('idle');
   const [reportedFirst, setReportedFirst] = useState(false);
 
   const [explainLoading, setExplainLoading] = useState(false);
   const [explainText, setExplainText] = useState<string | undefined>();
   const [explainAI, setExplainAI] = useState(false);
+  const latestSubmittedAnswer = useRef('');
 
   const [solutionLoading, setSolutionLoading] = useState(false);
   const [solutionText, setSolutionText] = useState<string | undefined>();
@@ -69,6 +101,8 @@ export function GeneratedProblemCard({
   // Reset all per-problem state whenever the problem changes (new id).
   useEffect(() => {
     setDraft('');
+    setSubmittedAnswer('');
+    latestSubmittedAnswer.current = '';
     setPhase('idle');
     setReportedFirst(false);
     setExplainLoading(false);
@@ -83,15 +117,21 @@ export function GeneratedProblemCard({
   const answered = phase === 'correct' || phase === 'incorrect';
   // Prefer the open-ended numeric level; fall back to the legacy band for old
   // problems. The answer key is deterministic regardless of `source`.
-  const level = problem.level ?? bandToLevel(problem.difficulty);
+  const level = Number.isFinite(problem.level) ? (problem.level as number) : bandToLevel(problem.difficulty ?? 'core');
   const band = levelToBand(level);
   const isAIScenario = problem.source === 'ai';
+  const solution = useMemo(() => safeSolution(problem), [problem]);
 
   const handleSubmit = () => {
     const trimmed = draft.trim();
     if (!trimmed || phase === 'correct') return;
     const correct = numericAnswersMatch(trimmed, problem.acceptedAnswer, problem.tolerance);
+    latestSubmittedAnswer.current = trimmed;
+    setSubmittedAnswer(trimmed);
     setPhase(correct ? 'correct' : 'incorrect');
+    setExplainLoading(false);
+    setExplainText(undefined);
+    setExplainAI(false);
     if (!reportedFirst) {
       setReportedFirst(true);
       onFirstResult?.(correct, trimmed);
@@ -100,19 +140,33 @@ export function GeneratedProblemCard({
 
   const handleExplain = async () => {
     if (explainLoading) return;
+    const answerToExplain = submittedAnswer || draft.trim();
     setExplainLoading(true);
     try {
-      const result = await aiExplainWrongAnswer({
-        conceptId: problem.conceptId,
-        prompt: problem.prompt,
-        learnerAnswer: draft.trim(),
-        correctAnswer: problem.acceptedAnswer,
-        params: problem.params,
-      });
-      setExplainText(result.explanation);
-      setExplainAI(result.usedAI);
+      const [explanation, worked] = await Promise.all([
+        aiExplainWrongAnswer({
+          conceptId: problem.conceptId,
+          prompt: problem.prompt,
+          learnerAnswer: answerToExplain,
+          correctAnswer: problem.acceptedAnswer,
+          params: problem.params,
+          answerMode: 'explanation',
+          answerKind: 'numeric',
+        }),
+        aiWorkedSolution({
+          conceptId: problem.conceptId,
+          prompt: problem.prompt,
+          solution,
+        }),
+      ]);
+      if (latestSubmittedAnswer.current === answerToExplain) {
+        setExplainText(formatWrongAnswerFeedback(explanation.explanation, worked.steps));
+        setExplainAI(explanation.usedAI || worked.usedAI);
+      }
     } finally {
-      setExplainLoading(false);
+      if (latestSubmittedAnswer.current === answerToExplain) {
+        setExplainLoading(false);
+      }
     }
   };
 
@@ -123,7 +177,7 @@ export function GeneratedProblemCard({
       const result = await aiWorkedSolution({
         conceptId: problem.conceptId,
         prompt: problem.prompt,
-        solution: problem.solution,
+        solution,
       });
       setSolutionText(result.steps.map((step) => `• ${step}`).join('\n'));
       setSolutionAI(result.usedAI);
@@ -229,7 +283,7 @@ export function GeneratedProblemCard({
               </Box>
               {phase === 'correct'
                 ? `The answer is ${problem.acceptedAnswer}.`
-                : 'Check your working, or get a hint below.'}
+                : 'Open the feedback below to see what went wrong and how to solve it.'}
             </Typography>
           </Box>
         )}
@@ -239,17 +293,19 @@ export function GeneratedProblemCard({
             <Stack direction="row" spacing={1} sx={{ mt: 1.5, flexWrap: 'wrap', gap: 1 }}>
               {phase === 'incorrect' && (
                 <Button variant="outlined" size="small" onClick={handleExplain} disabled={explainLoading}>
-                  Explain my answer
+                  Why was my answer wrong?
                 </Button>
               )}
-              <Button variant="text" size="small" onClick={handleWorkedSolution} disabled={solutionLoading}>
-                Show worked solution
-              </Button>
+              {phase === 'correct' && (
+                <Button variant="text" size="small" onClick={handleWorkedSolution} disabled={solutionLoading}>
+                  Show worked solution
+                </Button>
+              )}
             </Stack>
 
             {(explainLoading || explainText) && (
               <AIAssistPanel
-                title="Why this was off"
+                title="Full feedback"
                 loading={explainLoading}
                 text={explainText}
                 aiTag={explainAI && aiOn}

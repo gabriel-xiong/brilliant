@@ -30,12 +30,13 @@ function clampDifficultyIndex(index: number): number {
 
 /**
  * Map a lesson mastery status to a starting difficulty:
- * mastered -> challenge, completed/almost-done -> core, everything else -> intro.
+ * mastered -> challenge, proficient/completed/almost-done -> core, everything else -> intro.
  */
 export function difficultyForStatus(status: MasteryStatus | undefined): Difficulty {
   switch (status) {
     case 'mastered':
       return 'challenge';
+    case 'proficient':
     case 'completed':
     case 'almost-done':
       return 'core';
@@ -191,6 +192,40 @@ export function parseConceptId(raw: string | null | undefined): ConceptId | null
   return ALL_CONCEPTS.includes(raw as ConceptId) ? (raw as ConceptId) : null;
 }
 
+/** Return only valid ConceptIds from untrusted input, keeping order and removing duplicates. */
+export function parseConceptIds(raw: unknown): ConceptId[] {
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set<ConceptId>();
+  const concepts: ConceptId[] = [];
+  raw.forEach((value) => {
+    const concept = typeof value === 'string' ? parseConceptId(value) : null;
+    if (concept && !seen.has(concept)) {
+      seen.add(concept);
+      concepts.push(concept);
+    }
+  });
+  return concepts;
+}
+
+/**
+ * Normalize the multi-topic practice selection against the concepts currently
+ * unlocked for the learner. At least one concept is always returned when
+ * `unlocked` is non-empty, preserving the old single-topic behavior.
+ */
+export function normalizePracticeConceptSelection(
+  requested: readonly ConceptId[],
+  unlocked: readonly ConceptId[],
+  fallback: ConceptId,
+): ConceptId[] {
+  const unlockedSet = new Set(unlocked);
+  const filtered = requested.filter((concept, index) =>
+    unlockedSet.has(concept) && requested.indexOf(concept) === index
+  );
+  if (filtered.length > 0) return filtered;
+  if (unlockedSet.has(fallback)) return [fallback];
+  return unlocked[0] ? [unlocked[0]] : [];
+}
+
 /**
  * The learner's weakest concept — the one whose teaching lesson has the lowest
  * mastery rank. Used to default the practice surface to where help is most
@@ -252,6 +287,8 @@ export interface PracticeConfig {
   questionCount: number | 'unlimited';
   /** 'adaptive' auto-adjusts difficulty; a number pins a fixed level. */
   difficultyMode: DifficultyMode;
+  /** Optional saved topic set. Older configs omit this and default from the route. */
+  selectedConcepts?: ConceptId[];
 }
 
 export const DEFAULT_PRACTICE_CONFIG: PracticeConfig = {

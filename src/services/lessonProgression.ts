@@ -6,11 +6,11 @@ export type MasteryStatusLike = string | null | undefined;
 
 /**
  * A lesson counts as a satisfied prerequisite once the learner has finished it.
- * "completed" means finished-but-below-mastery; "mastered" means finished at the
- * mastery threshold. Both are enough to unlock the next lesson on the path.
+ * Needs practice, proficient, and mastered are diagnostic labels only. All three
+ * mean the lesson is finished and are enough to unlock the next lesson.
  */
 export function isLessonCompleted(status: MasteryStatusLike): boolean {
-  return status === 'completed' || status === 'mastered';
+  return status === 'completed' || status === 'proficient' || status === 'mastered';
 }
 
 /**

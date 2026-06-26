@@ -9,9 +9,9 @@
  * read from the `AI_API_KEY` env var at runtime and forwarded to an
  * OpenAI-compatible Chat Completions endpoint via `fetch`.
  *
- * Auth: the client sends a Firebase ID token as `Authorization: Bearer <token>`;
- * we verify it with firebase-admin and meter usage per UID in Firestore
- * (`rateLimits/{uid}`), exactly as the old callable did.
+ * Auth: if the client sends a Firebase ID token as `Authorization: Bearer <token>`,
+ * we verify it with firebase-admin and meter usage per UID in Firestore.
+ * Signed-out demo traffic is allowed, but receives a tighter IP-based bucket.
  */
 
 import type { VercelRequest, VercelResponse } from "@vercel/node";
@@ -38,12 +38,13 @@ const MAX_GENERATION_ATTEMPTS = 3;
 // Abuse protection: cap the size of the structured payload we accept.
 const MAX_PAYLOAD_CHARS = 8_000;
 
-// --- Per-user rate limiting (Phase 0) --------------------------------------
-// Paid generation must be protected. We meter calls per signed-in UID with a
-// Firestore-backed fixed-window counter (`rateLimits/{uid}`): a per-minute cap
-// to blunt bursts and a per-day cap to bound daily spend. Tune as needed.
+// --- Rate limiting (Phase 0) -----------------------------------------------
+// Paid generation must be protected. Signed-in users keep the original UID-based
+// bucket; signed-out demo users share a tighter IP-based bucket.
 const RATE_LIMIT_PER_MINUTE = 20;
 const RATE_LIMIT_PER_DAY = 500;
+const ANON_RATE_LIMIT_PER_MINUTE = 5;
+const ANON_RATE_LIMIT_PER_DAY = 50;
 const MINUTE_MS = 60_000;
 const DAY_MS = 86_400_000;
 
@@ -132,24 +133,32 @@ function getAdminApp(): App {
   return adminApp;
 }
 
-/** Verify the Bearer ID token from the Authorization header; returns the uid. */
-async function verifyRequestAuth(req: VercelRequest): Promise<string> {
+/** Verify an optional Bearer ID token; returns `null` for anonymous demo users. */
+async function verifyOptionalRequestAuth(req: VercelRequest): Promise<string | null> {
   const header = req.headers.authorization || req.headers.Authorization;
   const value = Array.isArray(header) ? header[0] : header;
-  if (!value || !value.startsWith("Bearer ")) {
-    fail("unauthenticated", "You must be signed in to use AI features.");
-  }
+  if (!value || !value.startsWith("Bearer ")) return null;
+
   const token = value.slice("Bearer ".length).trim();
-  if (!token) {
-    fail("unauthenticated", "You must be signed in to use AI features.");
-  }
+  if (!token) return null;
+
   try {
     const decoded = await getAuth(getAdminApp()).verifyIdToken(token);
     return decoded.uid;
   } catch (err) {
-    console.warn("ID token verification failed", { error: String(err) });
-    fail("unauthenticated", "Your session is invalid. Please sign in again.");
+    console.warn("ID token verification failed; treating request as anonymous", { error: String(err) });
+    return null;
   }
+}
+
+function anonymousRateLimitId(req: VercelRequest): string {
+  const forwarded = req.headers["x-forwarded-for"];
+  const forwardedValue = Array.isArray(forwarded) ? forwarded[0] : forwarded;
+  const realIp = req.headers["x-real-ip"];
+  const realIpValue = Array.isArray(realIp) ? realIp[0] : realIp;
+  const raw = (forwardedValue?.split(",")[0] || realIpValue || req.socket.remoteAddress || "unknown").trim();
+  const safe = raw.replace(/[^a-zA-Z0-9_.:-]/g, "_").slice(0, 120) || "unknown";
+  return `anon:${safe}`;
 }
 
 // --- Small helpers ---------------------------------------------------------
@@ -186,28 +195,51 @@ const GROUNDING_RULE =
   "plain language.";
 
 // --- Prompt builders (one per task) ----------------------------------------
-function buildPrompt(task: ProseTask, payload: Record<string, unknown>): PromptPair {
+export function buildPrompt(task: ProseTask, payload: Record<string, unknown>): PromptPair {
   const question = clip(asString(payload.question ?? payload.prompt));
   const concept = clip(asString(payload.concept ?? payload.topic), 400);
   const correctAnswer = clip(asString(payload.correctAnswer), 400);
   const userAnswer = clip(asString(payload.userAnswer ?? payload.studentAnswer), 400);
   const choices = clip(asString(payload.choices ?? payload.options), 1_000);
-  const explanation = clip(asString(payload.explanation ?? payload.context), 1_500);
+  const explanation = clip(asString(payload.explanation), 1_500);
+  const context = clip(asString(payload.context), 1_500);
+  const givenFacts = clip(asString(payload.givenFacts), 1_000);
+  const authoredHints = clip(asString(payload.hints), 1_000);
+  const previousHints = clip(asString(payload.previousHints), 1_500);
+  const solverHint = clip(asString(payload.solverHint), 1_000);
+  const answerMode = clip(asString(payload.answerMode ?? payload.mode), 80);
+  const answerKind = clip(asString(payload.answerKind), 80);
+  const answerComparison = clip(asString(payload.answerComparison), 500);
+  const hintDepth = clip(asString(payload.hintDepth), 20);
 
   switch (task) {
-    case "explainWrong":
+    case "explainWrong": {
+      const hintOnly = answerMode === "nudge" || answerMode === "hint";
       return {
         system: `${BASE_SYSTEM} ${GROUNDING_RULE}`,
         user:
-          "A learner answered a probability question incorrectly. In 2-4 sentences, " +
-          "gently diagnose the likely misconception behind their answer and point them " +
-          "toward the right way to think about it. Do NOT restate the full solution.\n\n" +
+          (hintOnly
+            ? "A learner answered a probability question incorrectly. In 1-2 sentences, give answer-aware advice that addresses their specific answer without revealing the correct answer. This is one hint in a visible stack: write only the new guidance for this hint level, and do not summarize, quote, or repeat earlier hints. The hint MUST name the concrete selected claim and the concrete prompt fact, event, item, bucket, or given number that confirms or contradicts it. Do not use generic phrases like 'Notice the main claim it is making', 'Compare ... with ...', 'Look for where it adds, removes, or overstates', 'Read each option as a claim', 'Use elimination', 'look directly at', 'that phrase is the constraint', or 'name the event'. Hint 1 should be one light nudge. Hint 2 should be only the next stronger clue. Hint 3 should be a near-walkthrough of the solution process: give the exact operations, rule, or decision procedure needed, but do NOT print the final accepted answer text/value or the full correct sort/order/mapping. Do not include the full solver trace or a 'Walk through it' section. "
+            : "A learner answered a probability question incorrectly. In 2-4 sentences, diagnose the likely misconception behind their specific answer and point them toward the right way to think about it. ") +
+          "Do not give a generic concept definition; explicitly react to the learner's answer. Do NOT restate the full solution.\n\n" +
           `Concept: ${concept}\n` +
           `Question: ${question}\n` +
+          (context ? `Full lesson context: ${context}\n` : "") +
+          (givenFacts ? `Given facts visible to learner: ${givenFacts}\n` : "") +
+          (authoredHints ? `Authored hints for this question: ${authoredHints}\n` : "") +
+          (previousHints ? `Previous visible hints, do not repeat or restate: ${previousHints}\n` : "") +
+          (solverHint ? `Answer-free setup hint: ${solverHint}\n` : "") +
           (choices ? `Choices: ${choices}\n` : "") +
           `Learner's answer: ${userAnswer}\n` +
-          `correctAnswer (authoritative, do not change): ${correctAnswer}`,
+          (answerKind ? `Answer kind: ${answerKind}\n` : "") +
+          (hintOnly && hintDepth ? `Hint level: ${hintDepth} of 3. Previous hint text is already visible above this one; add only new information for this level. Do not repeat any previous selected-answer restatement, opening sentence, diagnosis, or clause; start directly with the next productive check.\n` : "") +
+          (answerComparison ? `App diagnostic of learner answer: ${answerComparison}\n` : "") +
+          (explanation ? `Authored feedback/explanation: ${explanation}\n` : "") +
+          (hintOnly
+            ? `correctAnswer (authoritative, do not reveal): ${correctAnswer}`
+            : `correctAnswer (authoritative, do not change): ${correctAnswer}`),
       };
+    }
 
     case "workedSolution":
       return {
@@ -369,9 +401,12 @@ function extractText(data: unknown): string {
  * counters; throws `resource-exhausted` once either cap is hit. Applied to every
  * authenticated `aiGenerate` call before any upstream/model work happens.
  */
-async function enforceRateLimit(uid: string): Promise<void> {
+async function enforceRateLimit(
+  id: string,
+  limits = { perMinute: RATE_LIMIT_PER_MINUTE, perDay: RATE_LIMIT_PER_DAY },
+): Promise<void> {
   const db = getFirestore(getAdminApp());
-  const ref = db.collection("rateLimits").doc(uid);
+  const ref = db.collection("rateLimits").doc(id);
   await db.runTransaction(async (tx) => {
     const snap = await tx.get(ref);
     const now = Date.now();
@@ -396,16 +431,16 @@ async function enforceRateLimit(uid: string): Promise<void> {
       dayCount = 0;
     }
 
-    if (minuteCount >= RATE_LIMIT_PER_MINUTE) {
+    if (minuteCount >= limits.perMinute) {
       fail(
         "resource-exhausted",
-        `Rate limit: max ${RATE_LIMIT_PER_MINUTE} requests/minute. Please slow down.`,
+        `Rate limit: max ${limits.perMinute} requests/minute. Please slow down.`,
       );
     }
-    if (dayCount >= RATE_LIMIT_PER_DAY) {
+    if (dayCount >= limits.perDay) {
       fail(
         "resource-exhausted",
-        `Daily limit reached (${RATE_LIMIT_PER_DAY}/day). Try again tomorrow.`,
+        `Daily limit reached (${limits.perDay}/day). Try again tomorrow.`,
       );
     }
 
@@ -665,12 +700,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
   }
 
   try {
-    // --- Phase 0: require sign-in (verify Firebase ID token). -------------
-    // Paid generation must never be open to the public. The client sends the
-    // signed-in user's ID token as a Bearer header; we verify it and reject
-    // anything without a valid token. The client guards generation behind
-    // sign-in and degrades to its deterministic generator otherwise.
-    const uid = await verifyRequestAuth(req);
+    // --- Phase 0: identify caller when possible. ---------------------------
+    // Signed-in users get the normal per-UID bucket. For this demo, signed-out
+    // traffic is allowed but receives a much smaller IP-based bucket.
+    const uid = await verifyOptionalRequestAuth(req);
 
     // Vercel parses JSON bodies automatically; tolerate string bodies too.
     let data: unknown = req.body;
@@ -713,8 +746,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
       fail("internal", "AI service is not configured.");
     }
 
-    // --- Phase 0: per-user rate limiting before any paid work. -----------
-    await enforceRateLimit(uid);
+    // --- Phase 0: rate limiting before any paid work. ---------------------
+    await enforceRateLimit(
+      uid ?? anonymousRateLimitId(req),
+      uid
+        ? { perMinute: RATE_LIMIT_PER_MINUTE, perDay: RATE_LIMIT_PER_DAY }
+        : { perMinute: ANON_RATE_LIMIT_PER_MINUTE, perDay: ANON_RATE_LIMIT_PER_DAY },
+    );
 
     const typedPayload = payload as Record<string, unknown>;
 

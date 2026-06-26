@@ -43,8 +43,8 @@ describe('resolveContinueDestination', () => {
     expect(dest).toEqual({ lessonId: 'l1', stepIndex: 4 });
   });
 
-  it('points to the next unlocked lesson at its start once the current lesson is complete', () => {
-    const states = statesFrom({ l1: 'mastered' });
+  it('points to the next unlocked lesson at its start once the current lesson is proficient', () => {
+    const states = statesFrom({ l1: 'proficient' });
     const dest = resolveContinueDestination(states, () => 7);
 
     expect(dest).toEqual({ lessonId: 'l2', stepIndex: 0 });
@@ -111,7 +111,7 @@ describe('computeLessonStates — linear unlocking', () => {
   });
 
   it('unlocks only the next lesson once its prerequisite is complete', () => {
-    const states = courseStatesFrom({ [INTRO]: 'mastered', [COUNTING]: 'completed' });
+    const states = courseStatesFrom({ [INTRO]: 'proficient', [COUNTING]: 'completed' });
     // Completing Counting unlocks Compound and nothing further down the chain.
     expect(nodeFor(states, COMPOUND).unlocked).toBe(true);
     expect(nodeFor(states, CONDITIONAL).unlocked).toBe(false);
@@ -155,7 +155,7 @@ describe('computeLessonStates — linear unlocking', () => {
   });
 
   it('recommends the next unlocked lesson when none are started', () => {
-    const states = courseStatesFrom({ [INTRO]: 'mastered', [COUNTING]: 'completed' });
+    const states = courseStatesFrom({ [INTRO]: 'proficient', [COUNTING]: 'completed' });
     const current = states.find((state) => state.isCurrent);
     // The only available lesson on the linear path is Compound Events.
     expect(current?.lesson.lessonId).toBe(COMPOUND);
@@ -174,7 +174,7 @@ describe('resolveContinueDestination — linear path', () => {
   });
 
   it('opens the next unlocked lesson at step 0 when none are started', () => {
-    const states = courseStatesFrom({ [INTRO]: 'mastered', [COUNTING]: 'completed' });
+    const states = courseStatesFrom({ [INTRO]: 'proficient', [COUNTING]: 'completed' });
     const dest = resolveContinueDestination(states, () => 9);
     expect(dest).toEqual({ lessonId: COMPOUND, stepIndex: 0 });
   });

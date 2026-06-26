@@ -63,9 +63,25 @@ describe('progressService', () => {
     expect(progress.masteryStatus).toBe('mastered');
   });
 
+  it('marks completed lessons proficient at the configured first-try threshold', () => {
+    const lesson = {
+      ...introBasicProbabilityLesson,
+      masteryCriteria: { ...introBasicProbabilityLesson.masteryCriteria, minFirstAttemptAccuracy: 0.6 },
+    } satisfies Lesson;
+    const attempts = attemptsForCorrectFirstTry(2);
+    const progress = calculateLessonProgress(
+      lesson,
+      attempts,
+      lesson.steps.length - 1,
+      true
+    );
+
+    expect(progress.score).toBeCloseTo(2 / 3);
+    expect(progress.masteryStatus).toBe('proficient');
+  });
+
   it('marks completed lessons below the first-try threshold as needs practice', () => {
-    // Lesson 1 has 3 problem steps after the demo→question consolidation, so 2
-    // first-try-correct of 3 (~0.67) lands below the 0.8 mastery threshold.
+    // Two first-try-correct checks lands below the 0.8 proficiency threshold.
     const attempts = attemptsForCorrectFirstTry(2);
     const progress = calculateLessonProgress(
       introBasicProbabilityLesson,
@@ -113,6 +129,8 @@ describe('progressService', () => {
   describe('sticky mastery', () => {
     it('orders mastery statuses monotonically', () => {
       expect(maxMasteryStatus('mastered', 'completed')).toBe('mastered');
+      expect(maxMasteryStatus('proficient', 'completed')).toBe('proficient');
+      expect(maxMasteryStatus('mastered', 'proficient')).toBe('mastered');
       expect(maxMasteryStatus('completed', 'mastered')).toBe('mastered');
       expect(maxMasteryStatus('in-progress', 'almost-done')).toBe('almost-done');
       expect(maxMasteryStatus('not-started', 'in-progress')).toBe('in-progress');

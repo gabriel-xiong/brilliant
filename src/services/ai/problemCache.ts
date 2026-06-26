@@ -48,11 +48,20 @@ function looksLikeProblem(value: unknown): value is GeneratedProblem {
   if (!value || typeof value !== 'object') return false;
   const p = value as Partial<GeneratedProblem>;
   return (
+    typeof p.id === 'string' &&
     typeof p.conceptId === 'string' &&
+    typeof p.difficulty === 'string' &&
     typeof p.prompt === 'string' &&
     typeof p.acceptedAnswer === 'string' &&
+    typeof p.acceptedDecimal === 'number' &&
+    typeof p.tolerance === 'number' &&
     typeof p.params === 'object' &&
-    p.params !== null
+    p.params !== null &&
+    typeof p.solution === 'object' &&
+    p.solution !== null &&
+    typeof p.solution.fraction === 'string' &&
+    typeof p.solution.decimal === 'number' &&
+    Array.isArray(p.solution.steps)
   );
 }
 
