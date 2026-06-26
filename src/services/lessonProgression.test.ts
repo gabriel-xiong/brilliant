@@ -78,6 +78,8 @@ const COUNTING = 'counting-outcomes';
 const COMPOUND = 'compound-events';
 const CONDITIONAL = 'dependent-events';
 const MUTEX = 'mutually-exclusive-events';
+const EXPECTED = 'expected-value';
+const BAYES = 'bayes-updating';
 
 const courseLessons = [
   lesson(INTRO, 1),
@@ -193,7 +195,7 @@ describe('resolveContinueDestination — linear path', () => {
 
 describe('getNextLessonId — sequential course-graph order', () => {
   it('lists every lesson in column order', () => {
-    expect(courseGraphOrder()).toEqual([INTRO, COUNTING, COMPOUND, CONDITIONAL, MUTEX]);
+    expect(courseGraphOrder()).toEqual([INTRO, COUNTING, COMPOUND, CONDITIONAL, MUTEX, EXPECTED, BAYES]);
   });
 
   it('returns the next sequential lesson regardless of progress state', () => {
@@ -201,10 +203,13 @@ describe('getNextLessonId — sequential course-graph order', () => {
     expect(getNextLessonId(COUNTING)).toBe(COMPOUND);
     expect(getNextLessonId(COMPOUND)).toBe(CONDITIONAL);
     expect(getNextLessonId(CONDITIONAL)).toBe(MUTEX);
+    // The chain now continues past Mutually Exclusive into the two new lessons.
+    expect(getNextLessonId(MUTEX)).toBe(EXPECTED);
+    expect(getNextLessonId(EXPECTED)).toBe(BAYES);
   });
 
   it('returns null on the final lesson', () => {
-    expect(getNextLessonId(MUTEX)).toBeNull();
+    expect(getNextLessonId(BAYES)).toBeNull();
   });
 
   it('returns null for a lesson that is not part of the course graph', () => {

@@ -5,6 +5,7 @@ import { useNavigate } from 'react-router-dom';
 import { LessonNodeState } from '../../services/lessonProgression';
 import { getMasteryLabel } from '../../services/masteryLabels';
 import { courseGraphEdges, getCourseGraphNode } from '../../services/courseGraph';
+import { conceptsForLessonId } from '../../services/ai/conceptSchemas';
 
 interface CourseMapProps {
   states: LessonNodeState[];
@@ -17,14 +18,20 @@ const NODE_SIZE = 96;
 const LABEL_WIDTH = NODE_SIZE + 56;
 const LABEL_HALF_WIDTH = LABEL_WIDTH / 2;
 // Breathing room kept between a label card edge and the content edge.
-const EDGE_MARGIN = 24;
-// Minimum spacing between columns. The path stretches to fill the viewport, and only
-// scrolls horizontally when the viewport is too narrow to fit every stage at this gap.
-const MIN_HORIZONTAL_GAP = 188;
-const LEFT_PADDING = 120;
-// Larger than LEFT_PADDING so the last column is pulled inward and its (wider-than-the-circle)
-// label card clears the right edge instead of overflowing. Must stay >= LABEL_HALF_WIDTH + EDGE_MARGIN.
-const RIGHT_PADDING = 200;
+const EDGE_MARGIN = 28;
+// The trail ALWAYS stretches to fill the available viewport width so every stage
+// is visible at once with no horizontal scroll on desktop. MIN_HORIZONTAL_GAP is
+// only a floor used to compute a minimum content width: it keeps the columns from
+// crushing together on very narrow phones (where the map may then scroll a little
+// rather than overlapping every label). On any width above that floor the columns
+// distribute evenly across the full container.
+const MIN_HORIZONTAL_GAP = 120;
+// Edge paddings must each stay >= LABEL_HALF_WIDTH + EDGE_MARGIN so the first and
+// last (wider-than-the-circle) label cards clear the container edges. RIGHT is a
+// touch larger than LEFT to pull the final column (Lesson 7) inward so its
+// centered label card never bleeds off the right edge.
+const LEFT_PADDING = 110;
+const RIGHT_PADDING = 160;
 const FALLBACK_HEIGHT = 520;
 
 interface Point {
@@ -173,9 +180,12 @@ export default function CourseMap({ states }: CourseMapProps) {
     [layout]
   );
 
-  const intrinsicWidth = LEFT_PADDING + RIGHT_PADDING + Math.max(numColumns - 1, 0) * MIN_HORIZONTAL_GAP;
-  // Stretch to fill the viewport when there are few stages; scroll when there are many.
-  const contentWidth = Math.max(intrinsicWidth, viewportWidth);
+  // The smallest width that keeps columns at least MIN_HORIZONTAL_GAP apart. Used
+  // only as a floor for very narrow viewports.
+  const minContentWidth = LEFT_PADDING + RIGHT_PADDING + Math.max(numColumns - 1, 0) * MIN_HORIZONTAL_GAP;
+  // Always fill the viewport so all stages fit on screen; only fall back to the
+  // floor (and thus allow scrolling) when the viewport is narrower than the floor.
+  const contentWidth = Math.max(minContentWidth, viewportWidth);
   const columnGap = numColumns > 1 ? (contentWidth - LEFT_PADDING - RIGHT_PADDING) / (numColumns - 1) : 0;
 
   // Keep every node's label card fully inside the content box: a node center can sit no
@@ -200,7 +210,7 @@ export default function CourseMap({ states }: CourseMapProps) {
     const availableRange = Math.max(height - TOP_EXTENT - BOTTOM_EXTENT - 2 * VERTICAL_MARGIN, 0);
     // Cap the per-lane pixel size so a tall container doesn't stretch the
     // zigzag into something gangly; centre the whole shape in leftover space.
-    const laneUnit = Math.min(availableRange / laneSpan, 78);
+    const laneUnit = Math.min(availableRange / laneSpan, 104);
     const usedHeight = laneSpan * laneUnit + TOP_EXTENT + BOTTOM_EXTENT;
     const topOffset = Math.max((height - usedHeight) / 2, VERTICAL_MARGIN) + TOP_EXTENT;
 
@@ -281,8 +291,10 @@ export default function CourseMap({ states }: CourseMapProps) {
         boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.6), 0 18px 55px rgba(68,50,23,0.12)',
         border: '1px solid rgba(15,111,104,0.12)',
         WebkitOverflowScrolling: 'touch',
-        height: { xs: 460, md: 'calc(100vh - 250px)' },
-        minHeight: { xs: 460, md: 480 },
+        // Cap the height so a tall monitor doesn't leave a huge empty sky above
+        // the trail, while still shrinking gracefully on shorter windows.
+        height: { xs: 440, md: 'min(560px, calc(100vh - 250px))' },
+        minHeight: { xs: 440, md: 520 },
       }}
     >
       <Box
@@ -320,18 +332,19 @@ export default function CourseMap({ states }: CourseMapProps) {
           </Box>
         </Box>
 
-        {/* Floating clouds */}
+        {/* Floating clouds — positioned as fractions of the (responsive) content
+            width so they never push past the right edge and reintroduce a scroll. */}
         {[
-          { top: 56, left: 180, scale: 1 },
-          { top: 96, left: 620, scale: 0.8 },
-          { top: 70, left: 1040, scale: 0.9 },
+          { top: 56, leftFrac: 0.14, scale: 1 },
+          { top: 96, leftFrac: 0.46, scale: 0.8 },
+          { top: 70, leftFrac: 0.74, scale: 0.9 },
         ].map((cloud, index) => (
           <motion.div
             key={`cloud-${index}`}
             initial={{ opacity: 0 }}
             animate={{ opacity: 0.82, x: [0, 14, 0] }}
             transition={{ opacity: { duration: 0.8 }, x: { duration: 12 + index * 3, repeat: Infinity, ease: 'easeInOut' } }}
-            style={{ position: 'absolute', top: cloud.top, left: cloud.left, zIndex: 0, transform: `scale(${cloud.scale})` }}
+            style={{ position: 'absolute', top: cloud.top, left: Math.round(contentWidth * cloud.leftFrac), zIndex: 0, transform: `scale(${cloud.scale})` }}
           >
             <svg width="96" height="40" viewBox="0 0 96 40" fill="#ffffff" opacity={0.78} aria-hidden>
               <ellipse cx="30" cy="26" rx="26" ry="13" />
@@ -488,6 +501,48 @@ export default function CourseMap({ states }: CourseMapProps) {
                       >
                         {state.isCurrent ? 'Up next' : 'Tap to start'}
                       </Typography>
+                    )}
+                    {state.completed && conceptsForLessonId(state.lesson.lessonId).length > 0 && (
+                      <Box
+                        component="span"
+                        role="button"
+                        tabIndex={0}
+                        aria-label={`Practice ${state.lesson.title}`}
+                        onClick={(event) => {
+                          // The label card sits inside the node button; keep a
+                          // Practice tap from also opening the lesson.
+                          event.stopPropagation();
+                          navigate(`/practice?concept=${conceptsForLessonId(state.lesson.lessonId)[0]}`);
+                        }}
+                        onKeyDown={(event) => {
+                          if (event.key !== 'Enter' && event.key !== ' ') return;
+                          event.preventDefault();
+                          event.stopPropagation();
+                          navigate(`/practice?concept=${conceptsForLessonId(state.lesson.lessonId)[0]}`);
+                        }}
+                        sx={{
+                          mt: 0.6,
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: 0.4,
+                          px: 1,
+                          py: 0.3,
+                          border: '1px solid rgba(15,111,104,0.35)',
+                          borderRadius: 999,
+                          bgcolor: 'rgba(15,111,104,0.08)',
+                          color: '#0f6f68',
+                          cursor: 'pointer',
+                          fontWeight: 800,
+                          fontSize: 10,
+                          letterSpacing: 0.4,
+                          textTransform: 'uppercase',
+                          lineHeight: 1.2,
+                          transition: 'background-color 0.15s ease',
+                          '&:hover': { bgcolor: 'rgba(15,111,104,0.16)' },
+                        }}
+                      >
+                        Practice ▸
+                      </Box>
                     )}
                   </Box>
                 </Box>

@@ -75,6 +75,81 @@ export function isStageCorrect(stage: QuestionStage, answer: string): boolean {
   return answer === stage.answer;
 }
 
+/**
+ * Serialize a `sort` placement (item id → bucket id) into the string the lesson
+ * player submits as the answer. Keys are sorted so the same placement always
+ * produces the same string (used for restore/reveal).
+ */
+export function serializeSortAnswer(assignment: Record<string, string>): string {
+  const ordered: Record<string, string> = {};
+  for (const key of Object.keys(assignment).sort()) {
+    ordered[key] = assignment[key];
+  }
+  return JSON.stringify(ordered);
+}
+
+/** Serialize an `order` arrangement (list of item ids) into the submitted answer. */
+export function serializeOrderAnswer(order: string[]): string {
+  return JSON.stringify(order);
+}
+
+/** Parse a serialized `sort` placement back into an item id → bucket id map. */
+export function parseSortAnswer(raw: string): Record<string, string> {
+  return parseRecord(raw) ?? {};
+}
+
+/** Parse a serialized `order` arrangement back into a list of item ids. */
+export function parseOrderAnswer(raw: string): string[] {
+  return parseStringArray(raw) ?? [];
+}
+
+function parseRecord(raw: string): Record<string, string> | null {
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed as Record<string, string>;
+    }
+  } catch {
+    /* fall through */
+  }
+  return null;
+}
+
+function parseStringArray(raw: string): string[] | null {
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed) && parsed.every((entry) => typeof entry === 'string')) {
+      return parsed as string[];
+    }
+  } catch {
+    /* fall through */
+  }
+  return null;
+}
+
+/**
+ * Returns true when a `sort` placement matches the solution exactly: every item
+ * in the solution is present and assigned to its correct bucket, with no extra
+ * or missing items. Unparseable input never matches.
+ */
+export function isSortCorrect(solution: Record<string, string>, answer: string): boolean {
+  const assignment = parseRecord(answer);
+  if (!assignment) return false;
+  const solutionKeys = Object.keys(solution);
+  if (Object.keys(assignment).length !== solutionKeys.length) return false;
+  return solutionKeys.every((itemId) => assignment[itemId] === solution[itemId]);
+}
+
+/**
+ * Returns true when an `order` arrangement matches the solution sequence exactly
+ * (same items in the same positions). Unparseable input never matches.
+ */
+export function isOrderCorrect(solution: string[], answer: string): boolean {
+  const order = parseStringArray(answer);
+  if (!order || order.length !== solution.length) return false;
+  return order.every((itemId, index) => itemId === solution[index]);
+}
+
 export interface MultiStageOutcome {
   /** Per-stage correctness for the supplied answers, in order. */
   perStage: boolean[];

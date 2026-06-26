@@ -17,7 +17,12 @@ export type EmbeddedDemoType =
   | 'mutually-exclusive'
   | 'double-count-tally'
   | 'probability-slider'
-  | 'overlap-slider';
+  | 'overlap-slider'
+  | 'expected-value-spinner'
+  | 'arcade-rings'
+  | 'bayes-frequency'
+  | 'bayes-frequency-lab'
+  | 'bayes-screening-slider';
 
 /** A lightweight embedded interaction rendered alongside a step's body. */
 export interface EmbeddedDemo {
@@ -96,8 +101,32 @@ export interface ProblemVariant {
  * - `multi-stage`: sequentially gated sub-questions that build on each other.
  * - `slider`: the learner drags a slider to a value and submits it; the slider
  *   setting IS the answer, graded against `acceptedAnswer` like a free response.
+ * - `sort`: the learner drags/places each item into one of several labeled
+ *   buckets; the placement IS the answer, graded against `sortSolution`.
+ * - `order`: the learner arranges items into a sequence (e.g. least → most
+ *   likely); the arrangement IS the answer, graded against `orderSolution`.
  */
-export type ProblemFormat = 'multiple-choice' | 'free-response' | 'multi-stage' | 'slider';
+export type ProblemFormat =
+  | 'multiple-choice'
+  | 'free-response'
+  | 'multi-stage'
+  | 'slider'
+  | 'sort'
+  | 'order';
+
+/** A draggable/placeable item used by the `sort` and `order` interactions. */
+export interface InteractiveItem {
+  id: string;
+  label: string;
+}
+
+/** A labeled drop target for a `sort` interaction. */
+export interface SortBucket {
+  id: string;
+  label: string;
+  /** Optional one-line helper shown under the bucket label. */
+  hint?: string;
+}
 
 /** A single gated stage inside a multi-stage question. */
 export interface QuestionStage {
@@ -175,6 +204,22 @@ export interface ProblemStep extends BaseStep {
   sliderMin?: number;
   sliderMax?: number;
   sliderStep?: number;
+  // sort fields: the learner drops each item into a bucket. The placement (a map
+  // of itemId → bucketId) is graded against `sortSolution`. Buckets are shown in
+  // authored order; items start in an unplaced tray.
+  sortItems?: InteractiveItem[];
+  sortBuckets?: SortBucket[];
+  /** Correct bucket id for each item id. Every item must be placed correctly. */
+  sortSolution?: Record<string, string>;
+  // order fields: the learner arranges items into a sequence. The ordered list
+  // of item ids is graded against `orderSolution`.
+  orderItems?: InteractiveItem[];
+  /** Correct order of item ids (index 0 = the `orderStartLabel` end). */
+  orderSolution?: string[];
+  /** Label for the start (top) of the ordering, e.g. "Least likely". */
+  orderStartLabel?: string;
+  /** Label for the end (bottom) of the ordering, e.g. "Most likely". */
+  orderEndLabel?: string;
 }
 
 export type LessonStep = ConceptStep | SimulationStep | ProblemStep;
@@ -199,7 +244,7 @@ export interface Lesson {
 export const introBasicProbabilityLesson: Lesson = {
   lessonId: 'intro-basic-probability',
   order: 1,
-  contentVersion: 24,
+  contentVersion: 26,
   title: 'What is probability?',
   summary: 'Build an intuition for chance by flipping, spinning, and testing your own predictions hands-on.',
   tags: ['basic-probability', 'coins', 'dice'],
@@ -213,8 +258,8 @@ export const introBasicProbabilityLesson: Lesson = {
       stepId: 'concept-what-is-probability',
       type: 'concept',
       title: 'What is probability?',
-      body: 'Probability is how often we expect an event to happen. If something is impossible, its probability is 0%. If something is guaranteed, its probability is 100%. Most events live in between.\n\nThere are two ways to look at it. Flip the coin below a few times and watch the running tally: heads divided by the total number of flips. That is the observed (experimental) probability — what actually happened so far. It wobbles early on and drifts toward the true value the more you flip.',
-      bodyAfterDemo: 'The theoretical probability instead comes from counting the equally likely outcomes, before you flip anything:\n\nP(event) = successful outcomes / total possible outcomes\n\nA fair coin has 2 equally likely sides, so P(heads) = 1/2 = 50% — and the observed share of heads settles near that as flips pile up.',
+      body: 'Probability is how often we expect an event to happen — 0% if impossible, 100% if certain, and usually somewhere between. Flip the coin a few times and watch the running share of heads: that observed value wobbles at first, then settles toward the true chance as flips pile up.',
+      bodyAfterDemo: 'You can also predict it before flipping, by counting equally likely outcomes:\n\nP(event) = successful outcomes / total possible outcomes\n\nA fair coin has 2 equal sides, so P(heads) = 1/2 = 50%.',
       demo: {
         demoType: 'coin-flip',
         target: 'Heads',
@@ -224,25 +269,26 @@ export const introBasicProbabilityLesson: Lesson = {
     {
       stepId: 'problem-coin-probability',
       type: 'problem',
-      format: 'free-response',
-      title: 'Expected percentage',
-      description: 'Here is the same coin to experiment with. Flip it a few times and watch how the running share of heads behaves, then use that intuition to answer below.',
-      question: 'Using the coin above: if you flip a fair coin 1,000 times, about **what share of the flips should you expect to be heads**? Enter a fraction, decimal, or percent.',
-      demo: {
-        demoType: 'coin-flip',
-        target: 'Heads',
-      },
-      demoFirst: true,
-      acceptedAnswer: '1/2',
-      tolerance: 0.02,
-      placeholder: 'e.g. 1/2, 0.5, or 50%',
-      hints: [
-        'Each flip is one of two equally likely outcomes.',
-        'The number of flips changes how many trials you run, not the chance on each fair flip.',
-        'Use successful outcomes divided by total possible outcomes: 1 heads side out of 2.',
+      format: 'order',
+      title: 'Line them up by likelihood',
+      description: 'Probability runs from 0% (impossible) to 100% (certain). Arrange these everyday events from least to most likely.',
+      orderItems: [
+        { id: 'impossible', label: 'Roll a 7 on a six-face die' },
+        { id: 'lightning', label: 'Being struck by lightning in your lifetime' },
+        { id: 'weekend', label: 'A randomly chosen day of the week is a weekend' },
+        { id: 'sunrise', label: 'The sun rises tomorrow morning' },
       ],
-      explanation: 'Heads is 1 successful outcome out of 2 possible outcomes, so the expected share is 1/2 = 50%. With 1,000 flips the result may not be exactly 500 heads, but it should usually be close.',
-      incorrectFeedback: 'Use a hint if you\'re stuck!',
+      orderSolution: ['impossible', 'lightning', 'weekend', 'sunrise'],
+      orderStartLabel: 'Least likely',
+      orderEndLabel: 'Most likely',
+      question: 'Drag the events so the **least likely is on top and the most likely is on the bottom**.',
+      hints: [
+        'A six-face die has no 7, so that can never happen — it sits at 0%.',
+        'Being struck by lightning in your lifetime is very rare — far below 1%.',
+        'A weekend is 2 of the 7 days (about 29%); the sun rising tomorrow is all but certain (~100%).',
+      ],
+      explanation: 'Rolling a 7 is impossible (0%). Being struck by lightning in your lifetime is very rare (well under 1%). A weekend is 2 of 7 days (about 29%). The sun rising tomorrow is nearly certain (~100%). Probability lines events up from 0% to 100%.',
+      incorrectFeedback: 'Estimate each event\'s chance from 0% up to 100%, then order them smallest to largest.',
     },
     {
       stepId: 'problem-dice-probability',
@@ -250,7 +296,7 @@ export const introBasicProbabilityLesson: Lesson = {
       format: 'multi-stage',
       title: 'From two choices to six',
       explore: {
-        body: 'The coin had two equally likely outcomes. Now meet a wheel split into six equal slices labeled 1, 2, 3, 4, 5, and 6.\n\nSpin it below to see how it behaves. No slice is special, but landing on any one face should be less common than heads on a coin, because that face is only one slice out of six instead of one side out of two.\n\nWhen you are done experimenting, continue to the question.',
+        body: 'The coin had 2 equally likely outcomes; this wheel has 6 equal slices (1–6). So landing on any one face is rarer than heads — one slice in six, not one side in two. Spin it, then continue.',
         continueLabel: 'Continue to the question',
       },
       question: 'Now answer both parts below.',
@@ -294,7 +340,7 @@ export const introBasicProbabilityLesson: Lesson = {
       stepId: 'problem-even-dice',
       type: 'problem',
       title: 'Expected vs. observed',
-      description: 'Same wheel, a different kind of thinking: the last step computed numbers — this one asks you to judge what a short, real run actually tells you.',
+      description: 'Same wheel — now judge what a short, real run actually tells you.',
       question: 'You found that Face 4 should land about 1 spin in 6, so 60 spins should give roughly 10. Spin the wheel above around 60 times and suppose Face 4 lands only 6 times — well short of 10. **Which interpretation of this gap is best**?',
       demo: {
         demoType: 'dice-roll',
@@ -317,7 +363,7 @@ export const introBasicProbabilityLesson: Lesson = {
 export const countingOutcomesLesson: Lesson = {
   lessonId: 'counting-outcomes',
   order: 2,
-  contentVersion: 22,
+  contentVersion: 24,
   title: 'Counting Outcomes',
   summary: 'Learn how to count what can happen before you calculate probability.',
   tags: ['basic-probability', 'counting', 'outcomes'],
@@ -333,7 +379,7 @@ export const countingOutcomesLesson: Lesson = {
       format: 'multi-stage',
       title: 'Count before you calculate',
       explore: {
-        body: 'Probability starts with a simple question: what outcomes are possible? For a fair die, the possible outcomes are 1, 2, 3, 4, 5, and 6.\n\nThe event is what you are watching for. "Roll a 6" is one event; "roll 5 or 6" is a different event. Counting outcomes means deciding which die sides belong to the event — the total possible stays at 6, only the successful count changes.\n\nSet the lab to the event "5 or 6" and watch how many sides light up before you continue.',
+        body: 'Counting outcomes just means deciding which sides belong to the event — the total stays 6, only the successful count changes. An event is what you are watching for: "roll a 6" and "roll 5 or 6" are different events. Set the lab to "5 or 6" and watch which sides light up.',
         continueLabel: 'Continue to the question',
       },
       question: 'Now answer both parts using the lab above.',
@@ -465,26 +511,30 @@ export const countingOutcomesLesson: Lesson = {
     {
       stepId: 'problem-even-not-six',
       type: 'problem',
-      format: 'free-response',
-      title: 'Put the pieces together',
-      description: 'Same distribution lab as the last step, but now combine two ideas from this lesson — counting an event and excluding part of it with a complement — before scaling up to a long run.',
-      question: 'You roll the fair die 120 times. **About how many rolls do you expect to be even but NOT a 6**? Enter a whole number.',
-      demo: {
-        demoType: 'dice-distribution',
-        target: 'even',
-      },
-      demoFirst: true,
-      acceptedAnswer: '40',
-      tolerance: 5,
-      unit: 'rolls',
-      placeholder: 'a whole number of rolls',
-      hints: [
-        'Start by listing the even sides: 2, 4, and 6 — that is 3 of the 6 sides.',
-        'You want even but NOT a 6, so drop the 6. That leaves sides 2 and 4 — 2 of the 6 sides.',
-        'P(even but not 6) = 2/6 = 1/3, and the expected count is probability × rolls = 1/3 × 120.',
+      format: 'sort',
+      title: 'Build the favorable outcomes',
+      description: 'Combine two ideas from this lesson — counting an event and excluding part of it with a complement. Drop each die face into the box where it belongs to build the event "even, but not a 6."',
+      sortItems: [
+        { id: '1', label: '1' },
+        { id: '2', label: '2' },
+        { id: '3', label: '3' },
+        { id: '4', label: '4' },
+        { id: '5', label: '5' },
+        { id: '6', label: '6' },
       ],
-      explanation: 'The even sides are 2, 4, and 6, but "not a 6" removes the 6, leaving just 2 and 4 — so 2 of the 6 sides satisfy "even but not 6." That makes P = 2/6 = 1/3, and the expected count in 120 rolls is 1/3 × 120 = 40. Your observed count will wobble around 40.',
-      incorrectFeedback: 'Use a hint if you\'re stuck!',
+      sortBuckets: [
+        { id: 'fav', label: 'Even, but NOT a 6', hint: 'Faces that win the event' },
+        { id: 'other', label: 'Everything else', hint: 'Faces that do not' },
+      ],
+      sortSolution: { '2': 'fav', '4': 'fav', '1': 'other', '3': 'other', '5': 'other', '6': 'other' },
+      question: 'Drag each face into **"Even, but NOT a 6"** or **"Everything else."**',
+      hints: [
+        'Even faces are 2, 4, and 6 — that is 3 of the 6 faces.',
+        'The event also excludes the 6, so drop it. That leaves 2 and 4 as favorable.',
+        'Only 2 and 4 are even and not a 6; every other face goes in "Everything else."',
+      ],
+      explanation: 'Even faces are 2, 4, and 6, but "not a 6" removes the 6 — leaving 2 and 4. So 2 of the 6 faces are favorable, which means P(even but not 6) = 2/6 = 1/3. Over many rolls, about a third land here.',
+      incorrectFeedback: 'Even faces are 2, 4, and 6 — but the event also rules one of them out. Re-check which faces are even AND not a 6.',
     },
   ],
 };
@@ -492,7 +542,7 @@ export const countingOutcomesLesson: Lesson = {
 export const compoundEventsLesson: Lesson = {
   lessonId: 'compound-events',
   order: 3,
-  contentVersion: 15,
+  contentVersion: 17,
   title: 'Compound Events',
   summary: 'See how two-step events work, then separate "and" from "or".',
   tags: ['compound-events', 'and-or', 'two-step'],
@@ -508,7 +558,7 @@ export const compoundEventsLesson: Lesson = {
       format: 'multi-stage',
       title: 'When two things happen',
       explore: {
-        body: 'Some probabilities ask about one event; others ask about a pair of events. "Flip heads and then roll a 6" is stricter than either event alone, because both pieces have to happen — so a two-step event is less likely. A coin has 2 results and a die has 6 faces, so together they make 2 x 6 = 12 equally likely pairs (H1 through T6), and the event "heads and 6" highlights the pairs that win.',
+        body: 'A compound event combines two or more simple events into a single outcome you care about. "Flip heads and roll a 6" needs both pieces to happen, so it is stricter than either alone. A coin (2 results) and a die (6 faces) make 2 × 6 = 12 equally likely pairs (H1 through T6); the event "heads and 6" highlights the pairs that win.',
         continueLabel: 'Continue to the question',
       },
       question: 'Now answer both parts using the grid above.',
@@ -549,47 +599,29 @@ export const compoundEventsLesson: Lesson = {
     {
       stepId: 'problem-tails-over-four',
       type: 'problem',
-      format: 'multi-stage',
-      title: 'The "and" rule: multiply',
-      explore: {
-        body: 'An "and" event needs both pieces to happen. When the two steps are independent, you multiply their probabilities: P(heads and 6) = P(heads) × P(roll a 6) = 1/2 × 1/6 = 1/12. (An "or" event, where the two results cannot both happen, adds instead.) The tree below makes this visible: multiply the chances along the highlighted path to get the joint probability.',
-        continueLabel: 'Continue to the question',
-      },
-      question: 'Now work out P(tails and over 4) in two steps using the area model above.',
+      format: 'order',
+      title: 'Which is rarer, "and" or "or"?',
+      description: 'An "and" event needs both pieces, so it is stricter and rarer; an "or" event needs just one, so it is more forgiving. Rank these by how likely each is.',
       demo: {
         demoType: 'and-multiply',
         target: 'T-high',
       },
-      stages: [
-        {
-          stageId: 'stage-count-high-faces',
-          format: 'free-response',
-          prompt: 'A die has faces 1–6. **How many of them count as "over 4"**? Enter a whole number.',
-          acceptedAnswer: '2',
-          placeholder: 'a whole number of faces',
-          hints: [
-            '"Over 4" means strictly greater than 4 — not 4 itself.',
-            'Only 5 and 6 clear that bar.',
-          ],
-          explanation: 'Exactly 2 faces are over 4 (the 5 and the 6), so P(over 4) = 2/6.',
-          incorrectFeedback: 'Use a hint if you\'re stuck!',
-        },
-        {
-          stageId: 'stage-tails-high-probability',
-          format: 'free-response',
-          prompt: 'P(tails) = 1/2 and P(over 4) = 2/6. Multiply for the "and" event: **what is P(tails and over 4)**? Enter a fraction, decimal, or percent.',
-          acceptedAnswer: '2/12',
-          tolerance: 0.02,
-          placeholder: 'e.g. 2/12, 1/6, or 17%',
-          hints: [
-            'For an "and" event with two independent steps, multiply the two probabilities.',
-            '1/2 × 2/6 is the shaded area of the square.',
-            '1/2 × 2/6 = 2/12, which reduces to 1/6.',
-          ],
-          explanation: 'P(tails and over 4) = 1/2 × 2/6 = 2/12 = 1/6 ≈ 17%. That shaded rectangle is smaller than either side alone — "and" narrows the event.',
-          incorrectFeedback: 'Use a hint if you\'re stuck!',
-        },
+      orderItems: [
+        { id: 'and6', label: 'Heads AND roll a 6' },
+        { id: 'tover4', label: 'Tails AND roll over 4 (a 5 or 6)' },
+        { id: 'or6', label: 'Heads OR roll a 6' },
       ],
+      orderSolution: ['and6', 'tover4', 'or6'],
+      orderStartLabel: 'Least likely',
+      orderEndLabel: 'Most likely',
+      question: 'Drag the events from **least likely (top) to most likely (bottom)**.',
+      hints: [
+        '"Heads and 6" wins on just 1 of the 12 coin–die pairs.',
+        '"Tails and over 4" wins on 2 pairs (T5 and T6); "and" events stay small.',
+        '"Heads or 6" only needs one piece, so it wins on many more pairs — 7 of 12.',
+      ],
+      explanation: '"Heads and 6" wins on only 1 of 12 pairs (1/12). "Tails and over 4" wins on 2 (2/12 = 1/6). "Heads or 6" wins on 7 (7/12) — "or" is far more forgiving than "and." (For independent "and" events you can also just multiply: 1/2 × 1/6 = 1/12.)',
+      incorrectFeedback: 'Remember: "and" needs both pieces (rarer), while "or" needs just one (more likely). Count how many pairs win each.',
     },
     {
       stepId: 'problem-compound-wrap',
@@ -618,7 +650,7 @@ export const compoundEventsLesson: Lesson = {
 export const dependentEventsLesson: Lesson = {
   lessonId: 'dependent-events',
   order: 4,
-  contentVersion: 18,
+  contentVersion: 20,
   title: 'Conditional Probability',
   summary: 'Learn how new information changes which group you should count.',
   tags: ['conditional', 'given', 'evidence'],
@@ -633,34 +665,47 @@ export const dependentEventsLesson: Lesson = {
     {
       stepId: 'problem-condition-on-cloudy',
       type: 'problem',
-      format: 'free-response',
+      format: 'sort',
       title: 'New information changes the group',
-      explore: {
-        body: 'Suppose you ask, "What is the probability that it is raining?" With no other clues you look across every day on record. Now I tell you one new fact: "It is cloudy." That fact does not change the weather — it changes which days you count, so you focus only on the cloudy ones. That is conditional probability: how a probability shifts once you are given new information. Condition on cloudy in the lab and watch the group you count shrink.',
-        continueLabel: 'Continue to the question',
-      },
-      question: 'Once you condition on cloudy, **how many days are in the group you count (the denominator)**? Enter a whole number.',
+      description: 'Being told "it is cloudy" does not change the weather — it changes which days you count. Sort each kind of day into the group you keep or the days you set aside.',
       demo: {
         demoType: 'weather-conditional',
       },
       demoFirst: true,
-      acceptedAnswer: '40',
-      placeholder: 'a whole number of days',
-      hints: [
-        'Conditioning on cloudy throws away the clear days.',
-        'How many of the 100 days are cloudy?',
+      sortItems: [
+        { id: 'cloudy-rainy', label: 'Cloudy & rainy days' },
+        { id: 'cloudy-dry', label: 'Cloudy & dry days' },
+        { id: 'clear-rainy', label: 'Clear & rainy days' },
+        { id: 'clear-dry', label: 'Clear & dry days' },
       ],
-      explanation: 'Only the 40 cloudy days stay in the group, so the denominator is 40.',
-      incorrectFeedback: 'Use a hint if you\'re stuck!',
+      sortBuckets: [
+        { id: 'count', label: 'Count these', hint: 'The cloudy days — your new denominator' },
+        { id: 'ignore', label: 'Set aside', hint: 'Days that are not cloudy' },
+      ],
+      sortSolution: {
+        'cloudy-rainy': 'count',
+        'cloudy-dry': 'count',
+        'clear-rainy': 'ignore',
+        'clear-dry': 'ignore',
+      },
+      question: 'Given that it is **cloudy**, drag each kind of day into the group you count or the days you set aside.',
+      hints: [
+        'Conditioning on cloudy keeps only the cloudy days — rainy or dry.',
+        'A day being rainy or dry does not matter here; only whether it is cloudy.',
+        'Both cloudy groups are counted; both clear groups are set aside.',
+      ],
+      explanation: 'Conditioning on cloudy keeps every cloudy day — whether rainy or dry — and sets aside the clear ones. Those cloudy days become the new denominator: the group you measure rain against.',
+      incorrectFeedback: 'You are told it is cloudy, so keep the cloudy days and set aside the rest. Rain or no rain does not decide which days count here.',
     },
     {
       stepId: 'problem-conditional-formula',
       type: 'problem',
       format: 'multi-stage',
+      demoFirst: true,
       title: 'Use the conditional formula',
       description: 'Capture conditioning as a formula, then apply it to a fresh set of days.',
       explore: {
-        body: 'The bar means "given," so P(A | B) is the probability of A once you know B. Conditioning puts that group in the denominator:\n\nP(A | B) = P(A and B) / P(B)\n\nThe numerator counts the cases that satisfy both A and B, while the denominator is the whole conditioning group B. Keep the formula in view as you work the question below.',
+        body: 'The bar means "given": P(A | B) is the chance of A once you know B. Conditioning makes B the new denominator:\n\nP(A | B) = P(A and B) / P(B)',
         continueLabel: 'Continue to the question',
       },
       question: 'In a new set of 100 days, 50 are cloudy and 20 of those are both cloudy and rainy.',
@@ -735,7 +780,7 @@ export const dependentEventsLesson: Lesson = {
       stepId: 'problem-conditional-wrap',
       type: 'problem',
       title: 'What does "given" do?',
-      description: 'Same marble bag as the last step — new question: experiment with and without replacing, then pick the best explanation of why "given" changes the odds.',
+      description: 'Same marble bag — now pick the best explanation of why "given" changes the odds.',
       question: 'You draw one marble from the bag and keep it. **Why does knowing the first marble was teal change the probability that the next draw is teal**?',
       demo: {
         demoType: 'draw-dependence',
@@ -758,7 +803,7 @@ export const dependentEventsLesson: Lesson = {
 export const strategyFairnessLesson: Lesson = {
   lessonId: 'mutually-exclusive-events',
   order: 5,
-  contentVersion: 14,
+  contentVersion: 17,
   title: 'Mutually Exclusive Events',
   summary: 'Learn when two events cannot happen together, and when adding probabilities double-counts.',
   tags: ['mutually-exclusive', 'or', 'overlap'],
@@ -952,10 +997,348 @@ export const strategyFairnessLesson: Lesson = {
   ],
 };
 
+export const expectedValueLesson: Lesson = {
+  lessonId: 'expected-value',
+  order: 6,
+  contentVersion: 4,
+  title: 'Expected Value',
+  summary: 'Find the long-run average payoff of a chance game, and learn what makes a game fair.',
+  tags: ['expected-value', 'average', 'fairness'],
+  estimatedMinutes: 13,
+  masteryCriteria: {
+    minFirstAttemptAccuracy: 0.8,
+    minCompletedSteps: 4,
+  },
+  steps: [
+    {
+      stepId: 'concept-what-is-expected-value',
+      type: 'concept',
+      title: 'The long-run average payoff',
+      demoFirst: true,
+      body: 'Now each outcome carries a payoff: the spinner above has four equal wedges, and landing on one pays you that many points. Spin once and you cannot predict the result.',
+      bodyAfterDemo: 'But run many spins and the running average payoff settles toward one fixed number, no matter how the early spins wobble. That number is the expected value, E[X] — the average payoff per spin over the long run.',
+      demo: {
+        demoType: 'expected-value-spinner',
+        target: 'prize',
+      },
+    },
+    {
+      stepId: 'problem-compute-expected-value',
+      type: 'problem',
+      format: 'multi-stage',
+      title: 'Compute E[X]',
+      explore: {
+        body: 'The prize spinner\'s four equal wedges pay 0, 2, 4, and 6 points — each equally likely. Spin a few times and watch the observed average creep toward the expected value, then compute it yourself.',
+        continueLabel: 'Continue to the question',
+      },
+      question: 'Now find the expected value in two steps using the spinner above.',
+      demo: {
+        demoType: 'expected-value-spinner',
+        target: 'prize',
+      },
+      stages: [
+        {
+          stageId: 'stage-wedge-prob',
+          format: 'free-response',
+          prompt: 'The four wedges are equally likely. **What is the probability of landing on any one specific wedge**? Enter a fraction, decimal, or percent.',
+          acceptedAnswer: '1/4',
+          tolerance: 0.02,
+          placeholder: 'e.g. 1/4, 0.25, or 25%',
+          hints: [
+            'Count the wedges. They are all the same size, so they are equally likely.',
+            'Use P = successful outcomes / total possible outcomes — one wedge out of four.',
+          ],
+          explanation: 'Each of the 4 equal wedges is equally likely, so P(one wedge) = 1/4 = 25%.',
+          incorrectFeedback: 'Use a hint if you\'re stuck!',
+        },
+        {
+          stageId: 'stage-expected-value',
+          format: 'free-response',
+          prompt: 'Weight each payoff by 1/4 and add them up. **What is E[X], the expected payoff per spin**? Enter a number of points.',
+          acceptedAnswer: '3',
+          unit: 'points',
+          placeholder: 'a number of points',
+          hints: [
+            'E[X] = Σ (value × probability). Every wedge has probability 1/4.',
+            'That is the same as the plain average of the four payoffs: add them, divide by 4.',
+            'Work out (0 + 2 + 4 + 6) ÷ 4.',
+          ],
+          explanation: 'E[X] = 1/4×0 + 1/4×2 + 1/4×4 + 1/4×6 = (0 + 2 + 4 + 6)/4 = 12/4 = 3 points. That matches the average the spinner converges to.',
+          incorrectFeedback: 'Use a hint if you\'re stuck!',
+        },
+      ],
+    },
+    {
+      stepId: 'problem-expected-winnings',
+      type: 'problem',
+      format: 'order',
+      title: 'Rank the spinners by long-run payoff',
+      description: 'With four equal wedges, the expected value is just the average of the four payoffs. A higher expected value means a higher total over many spins — rank these spinners by it.',
+      demo: {
+        demoType: 'expected-value-spinner',
+        target: 'prize',
+      },
+      demoFirst: true,
+      orderItems: [
+        { id: 'low', label: 'Wedges pay 0, 0, 0, 4' },
+        { id: 'mid', label: 'Wedges pay 0, 2, 4, 6' },
+        { id: 'high', label: 'Wedges pay 1, 5, 6, 8' },
+      ],
+      orderSolution: ['low', 'mid', 'high'],
+      orderStartLabel: 'Lowest expected value',
+      orderEndLabel: 'Highest expected value',
+      question: 'Drag the spinners from **lowest expected value (top) to highest (bottom)**.',
+      hints: [
+        'Average the four equal payoffs: add them and divide by 4.',
+        '0+0+0+4 = 4 → average 1; 0+2+4+6 = 12 → average 3.',
+        '1+5+6+8 = 20 → average 5, the highest. So the order is 1, 3, 5.',
+      ],
+      explanation: 'Averaging the four equal wedges gives expected values of 1, 3, and 5 points. Higher payoffs across the wedges mean a higher long-run average — so over many spins the totals grow in exactly this order.',
+      incorrectFeedback: 'For equal wedges, the expected value is just the average of the four payoffs. Add each spinner\'s payoffs and divide by 4, then order them.',
+    },
+    {
+      stepId: 'problem-fair-game',
+      type: 'problem',
+      format: 'multi-stage',
+      title: 'Is this game fair?',
+      explore: {
+        body: 'A game is fair when your expected NET gain — average payoff minus cost — is 0. Suppose the arcade toss above (average payoff 3 points) now costs 4 points per ball.',
+        continueLabel: 'Continue to the question',
+      },
+      question: 'Now answer both parts using the arcade toss above.',
+      demo: {
+        demoType: 'arcade-rings',
+      },
+      stages: [
+        {
+          stageId: 'stage-net-per-play',
+          format: 'free-response',
+          prompt: 'The average payoff is 3 points and each ball costs 4 points. **What is your expected NET gain per ball**? Enter a number (it may be negative).',
+          acceptedAnswer: '-1',
+          placeholder: 'e.g. -1',
+          hints: [
+            'Net gain = expected payoff − cost.',
+            'You get 3 points on average but pay 4 to play.',
+            'Work out 3 − 4.',
+          ],
+          explanation: 'Expected net = 3 − 4 = −1 point per ball. On average you lose a point each toss, so the game is not fair — it is stacked against you.',
+          incorrectFeedback: 'Use a hint if you\'re stuck!',
+        },
+        {
+          stageId: 'stage-net-total',
+          format: 'free-response',
+          prompt: 'If you keep playing this game for 10 balls, **about how many points do you expect to gain in total**? Enter a number (it may be negative).',
+          acceptedAnswer: '-10',
+          placeholder: 'e.g. -10',
+          hints: [
+            'Expected total net = expected net per ball × number of balls.',
+            'Each ball averages −1 point, and you toss 10 times.',
+            'Work out −1 × 10.',
+          ],
+          explanation: 'Expected total net = −1 × 10 = −10 points. A small per-toss disadvantage adds up: over 10 balls you expect to be down about 10 points.',
+          incorrectFeedback: 'Use a hint if you\'re stuck!',
+        },
+      ],
+    },
+    {
+      stepId: 'problem-fair-game-why',
+      type: 'problem',
+      title: 'What would make it fair?',
+      description: 'Use the arcade toss above: its rings pay 3 points on average over many balls.',
+      question: 'The arcade toss pays 3 points on average. **What one-time cost per ball would make this game exactly fair**?',
+      demo: {
+        demoType: 'arcade-rings',
+      },
+      demoFirst: true,
+      choices: [
+        { label: '3 points — set the cost equal to the expected payoff so the expected net gain is 0.', value: 'three' },
+        { label: '0 points — any game with a positive payoff is automatically fair.', value: 'zero' },
+        { label: '12 points — match the biggest prize a single ball can win.', value: 'biggest' },
+        { label: 'No cost can make it fair, because the result is random.', value: 'never' },
+      ],
+      answer: 'three',
+      explanation: 'A game is fair when expected payoff − cost = 0, so the fair cost equals the expected value: 3 points. Charge less and the game favors the player; charge more (like the 4-point version) and it favors the house. Randomness alone does not make a game unfair — the balance between average payoff and cost does.',
+      incorrectFeedback: 'Give it another try.',
+    },
+  ],
+};
+
+export const bayesUpdatingLesson: Lesson = {
+  lessonId: 'bayes-updating',
+  order: 7,
+  contentVersion: 4,
+  title: 'Updating Beliefs',
+  summary: 'Use counts out of a population to update a belief after a test result — and see why a positive test can still mean low odds.',
+  tags: ['bayes', 'conditional', 'evidence'],
+  estimatedMinutes: 14,
+  masteryCriteria: {
+    minFirstAttemptAccuracy: 0.8,
+    minCompletedSteps: 4,
+  },
+  steps: [
+    {
+      stepId: 'concept-updating-beliefs',
+      type: 'concept',
+      title: 'Evidence changes the count',
+      demoFirst: true,
+      body: 'Conditional probability showed that new information changes which group you count. Updating a belief is the same, but now the information is evidence — like a test result.',
+      bodyAfterDemo: 'Counting real people is easier than juggling percentages. Drag the sliders above and watch the outlined "tests positive" group: of everyone who tests positive, what share are the true positives?',
+      demo: {
+        demoType: 'bayes-frequency-lab',
+      },
+    },
+    {
+      stepId: 'problem-build-counts',
+      type: 'problem',
+      format: 'sort',
+      title: 'Label the four kinds of people',
+      description: 'Picture a town of 1,000 people, each one of four kinds depending on whether they have the condition and how they test. Drop each group onto its correct label.',
+      demo: {
+        demoType: 'bayes-frequency',
+      },
+      demoFirst: true,
+      sortItems: [
+        { id: 'tp', label: 'Has it · tests positive' },
+        { id: 'fn', label: 'Has it · tests negative' },
+        { id: 'fp', label: "Doesn't have it · tests positive" },
+        { id: 'tn', label: "Doesn't have it · tests negative" },
+      ],
+      sortBuckets: [
+        { id: 'true-positive', label: 'True positive', hint: 'Caught correctly' },
+        { id: 'false-negative', label: 'False negative', hint: 'Missed' },
+        { id: 'false-positive', label: 'False positive', hint: 'False alarm' },
+        { id: 'true-negative', label: 'True negative', hint: 'Cleared correctly' },
+      ],
+      sortSolution: {
+        tp: 'true-positive',
+        fn: 'false-negative',
+        fp: 'false-positive',
+        tn: 'true-negative',
+      },
+      question: 'Drag each group onto its label: **true positive, false negative, false positive, or true negative**.',
+      hints: [
+        '"Positive/negative" describes the test result; "true/false" says whether the test was right.',
+        'A true positive really has it and tests positive; a false positive is healthy but tests positive.',
+        'A false negative has it but tests negative; a true negative is healthy and tests negative.',
+      ],
+      explanation: 'A "true positive" really has the condition and tests positive; a "false positive" is healthy but still tests positive. When a condition is rare, the many healthy people produce lots of false positives — which is exactly why a positive result can still mean low odds. Keep these four groups straight and the rest is just counting.',
+      incorrectFeedback: 'Split the label in two: the test result (positive/negative) and whether the test was correct (true/false). Re-check which group each describes.',
+    },
+    {
+      stepId: 'problem-find-posterior',
+      type: 'problem',
+      format: 'multi-stage',
+      title: 'How likely is it now?',
+      description: 'Keep the same town: 90 true positives and 180 false positives. Now turn those counts into the updated belief.',
+      question: 'Someone in this town tests positive. Work out how likely they are to actually have the condition.',
+      demo: {
+        demoType: 'bayes-frequency-lab',
+      },
+      stages: [
+        {
+          stageId: 'stage-total-positive',
+          format: 'free-response',
+          prompt: 'Add the true positives and false positives. **How many people test positive in total**? Enter a whole number.',
+          acceptedAnswer: '270',
+          placeholder: 'a whole number of people',
+          hints: [
+            'Everyone who tests positive is either a true positive or a false positive.',
+            'Add the 90 true positives to the 180 false positives.',
+          ],
+          explanation: 'Total positives = 90 true positives + 180 false positives = 270 people. This is the denominator — the whole group you now condition on.',
+          incorrectFeedback: 'Use a hint if you\'re stuck!',
+        },
+        {
+          stageId: 'stage-posterior',
+          format: 'free-response',
+          prompt: 'Of those 270 positive testers, only the 90 true positives really have the condition. **What is P(condition | positive)**? Enter a fraction, decimal, or percent.',
+          acceptedAnswer: '90/270',
+          tolerance: 0.02,
+          placeholder: 'e.g. 90/270, 1/3, or 33%',
+          hints: [
+            'P(condition | positive) = true positives / all positives.',
+            'Put the 90 true positives over the 270 total positives.',
+            '90/270 reduces to 1/3.',
+          ],
+          explanation: 'P(condition | positive) = 90/270 = 1/3 ≈ 33%. Even after a positive result on a fairly accurate test, there is only about a 1-in-3 chance the person truly has the condition. (This ratio is exactly Bayes\' rule, P(H | E) = P(E | H) × P(H) / P(E) — counting bodies just skips the algebra.)',
+          incorrectFeedback: 'Use a hint if you\'re stuck!',
+        },
+      ],
+    },
+    {
+      stepId: 'problem-tune-false-alarms',
+      type: 'problem',
+      format: 'slider',
+      title: 'Tune the false alarms',
+      description: 'Start from the same town: 90 people have the condition and all 90 test positive. Drag the false alarms and watch how trustworthy a positive becomes.',
+      question: 'Drag the false alarms until a positive test is a 50/50 coin flip — P(condition | positive) = 50%. **How many false positives makes a positive even money?**',
+      demo: {
+        demoType: 'bayes-screening-slider',
+      },
+      sliderMin: 0,
+      sliderMax: 270,
+      sliderStep: 10,
+      acceptedAnswer: '90',
+      tolerance: 5,
+      hints: [
+        'A positive is 50/50 when the false alarms exactly match the true positives.',
+        'There are 90 true positives — match that count.',
+        'Slide until the posterior readout shows 50%.',
+      ],
+      explanation: 'With 90 true positives, a positive is a coin flip when there are also 90 false positives: P = 90 / (90 + 90) = 90/180 = 50%. Fewer false alarms makes a positive more trustworthy; more false alarms drags it down.',
+      incorrectFeedback: 'Watch the posterior readout — nudge the false alarms until it reads 50%.',
+    },
+    {
+      stepId: 'problem-posterior-fresh',
+      type: 'problem',
+      format: 'free-response',
+      title: 'A spam filter',
+      description: 'A fresh scenario with the same kind of counting — now an email spam filter.',
+      question: 'A filter scans 1,000 emails. 40 are truly spam and the filter flags all 40. Of the 960 real emails, 120 also get flagged. **If an email is flagged, what is the probability it is actually spam**? Enter a fraction, decimal, or percent.',
+      demo: {
+        demoType: 'bayes-frequency-lab',
+      },
+      demoFirst: true,
+      acceptedAnswer: '40/160',
+      tolerance: 0.02,
+      placeholder: 'e.g. 40/160, 1/4, or 25%',
+      hints: [
+        'First find the total flagged: real spam caught plus real emails wrongly flagged.',
+        '40 true spam + 120 false alarms = 160 flagged emails.',
+        'Posterior = true spam / all flagged = 40/160.',
+      ],
+      explanation: 'Flagged total = 40 + 120 = 160, and 40 are truly spam, so P(spam | flagged) = 40/160 = 1/4 = 25%. Even though the filter catches every real spam, most flagged emails are legitimate — because spam is rare here, the false alarms pile up.',
+      incorrectFeedback: 'Use a hint if you\'re stuck!',
+    },
+    {
+      stepId: 'problem-bayes-why',
+      type: 'problem',
+      title: 'Why so low?',
+      description: 'Set a low base rate but high sensitivity in the lab above and watch the orange false positives swamp the green true positives.',
+      question: 'The test catches 90% of real cases, yet a positive result meant only a 1-in-3 chance of truly having the condition. **Why is the updated probability so much lower than the test\'s accuracy**?',
+      demo: {
+        demoType: 'bayes-frequency-lab',
+      },
+      demoFirst: true,
+      choices: [
+        { label: 'The condition is rare, so the many healthy people produce more false positives than the few real cases produce true positives.', value: 'base-rate' },
+        { label: 'The test is broken — a 90% test should make a positive 90% certain.', value: 'broken' },
+        { label: 'Conditional probability does not apply once you have a test result.', value: 'no-conditional' },
+        { label: 'The false positives should be ignored because those people are healthy.', value: 'ignore-fp' },
+      ],
+      answer: 'base-rate',
+      explanation: 'Because the condition is rare, there are far more healthy people (900) than sick people (100). Even a modest 20% false-positive rate on that large healthy group (180 false positives) swamps the 90 true positives. This is the base-rate effect: the posterior depends on how common the condition is, not just on how accurate the test is.',
+      incorrectFeedback: 'Give it another try.',
+    },
+  ],
+};
+
 export const allLessons: Lesson[] = [
   introBasicProbabilityLesson,
   countingOutcomesLesson,
   compoundEventsLesson,
   dependentEventsLesson,
   strategyFairnessLesson,
+  expectedValueLesson,
+  bayesUpdatingLesson,
 ];

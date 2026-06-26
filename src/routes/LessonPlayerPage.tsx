@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link as RouterLink } from 'react-router-dom';
 import { useParams, useSearchParams } from 'react-router-dom';
-import { Alert, Box, Button, Card, CardContent, CircularProgress, Container, Stack, Typography } from '@mui/material';
-import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
+import { Alert, Box, Button, Card, CardContent, CircularProgress, Container, Snackbar, Stack, Typography } from '@mui/material';
+import { motion, useReducedMotion } from 'framer-motion';
 import { fetchAllLessons, fetchLesson, FetchLessonResult } from '../services/lessonService';
 import { Lesson } from '../models/lesson';
 import { useLessonState } from '../hooks/useLessonState';
@@ -12,6 +12,10 @@ import { useAuth } from '../contexts/AuthContext';
 import { loadUserSummary } from '../services/progressService';
 import { computeLessonStates, getEffectiveStatus } from '../services/lessonProgression';
 import { getNextLessonId } from '../services/courseGraph';
+import { CONCEPT_LABELS } from '../services/ai/conceptSchemas';
+import { newlyUnlockedConceptForLesson } from '../services/practiceAccess';
+import { playLessonComplete } from '../services/soundService';
+import SoundToggle from '../components/SoundToggle';
 
 export default function LessonPlayerPage() {
   const { lessonId } = useParams<{ lessonId: string }>();
@@ -30,6 +34,7 @@ export default function LessonPlayerPage() {
     locked: false,
   });
   const [nextLesson, setNextLesson] = useState<{ lessonId: string; title: string } | null>(null);
+  const [practiceUnlockOpen, setPracticeUnlockOpen] = useState(false);
   const { user } = useAuth();
   const prefersReducedMotion = useReducedMotion();
   const {
@@ -104,6 +109,38 @@ export default function LessonPlayerPage() {
       cancelled = true;
     };
   }, [lessonId, user?.uid]);
+
+  // Fire the "practice unlocked" toast exactly once, on the false→true
+  // completion transition within this session. A baseline is captured the first
+  // time real progress for THIS lesson is observed, so opening an
+  // already-completed lesson (review) never re-triggers it, and the async
+  // progress load (which starts from a pending not-completed state) cannot spoof
+  // a transition.
+  const completed = state.progress.completed;
+  const progressLessonId = state.progress.lessonId;
+  const completionBaseline = useRef<{ lessonId: string | null; completed: boolean }>({
+    lessonId: null,
+    completed: false,
+  });
+  useEffect(() => {
+    if (!lesson || progressLessonId !== lesson.lessonId) return;
+    if (completionBaseline.current.lessonId !== lesson.lessonId) {
+      completionBaseline.current = { lessonId: lesson.lessonId, completed };
+      return;
+    }
+    if (!completionBaseline.current.completed && completed) {
+      setPracticeUnlockOpen(true);
+      // Celebrate the completion once, on this false→true transition. The same
+      // baseline guard that keeps the toast from re-firing on re-render or when
+      // reopening an already-finished lesson also keeps the chime to one play.
+      playLessonComplete();
+    }
+    completionBaseline.current.completed = completed;
+  }, [lesson, progressLessonId, completed]);
+
+  const practiceConceptId = lesson ? (newlyUnlockedConceptForLesson(lesson.lessonId) ?? undefined) : undefined;
+  const practiceConceptLabel = practiceConceptId ? CONCEPT_LABELS[practiceConceptId] : undefined;
+  const practiceLink = practiceConceptId ? `/practice?concept=${practiceConceptId}` : '/practice';
 
   if (loading || !gate.checked) {
     return (
@@ -200,9 +237,12 @@ export default function LessonPlayerPage() {
         <Typography variant="h2" component="h1" gutterBottom sx={{ letterSpacing: '-0.04em' }}>
           {lesson.title}
         </Typography>
-        <Button component={RouterLink} to="/course" variant="text" size="small" sx={{ mt: 1, flexShrink: 0 }}>
-          Course map
-        </Button>
+        <Stack direction="row" spacing={0.5} alignItems="center" sx={{ mt: 1, flexShrink: 0 }}>
+          <Button component={RouterLink} to="/course" variant="text" size="small">
+            Course map
+          </Button>
+          <SoundToggle />
+        </Stack>
       </Box>
       <Typography variant="body1" component="p" sx={{ mb: 3, color: 'text.secondary', fontWeight: 400, fontSize: '1.15rem' }}>
         {lesson.summary}
@@ -254,29 +294,33 @@ export default function LessonPlayerPage() {
           )}
         </Stack>
       )}
-      <AnimatePresence mode="wait" initial={false}>
-        <motion.div
-          key={state.currentStepIndex}
-          initial={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, y: 16 }}
-          animate={{ opacity: 1, y: 0 }}
-          exit={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, y: -16 }}
-          transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
-        >
-          <LessonStepRenderer
-            step={state.currentStep ?? lesson.steps[state.currentStepIndex] ?? lesson.steps[0]}
-            feedbackState={state.feedbackState}
-            selectedChoice={state.selectedChoice}
-            questionView={state.questionView}
-            lessonComplete={state.progress.completed}
-            reviewMode={reviewMode}
-            hasNextStep={hasNextStep}
-            onSubmitAnswer={submitAnswer}
-            onAdvance={advanceStep}
-            onRevealHint={revealHint}
-            onRevealAnswer={revealAnswer}
-          />
-        </motion.div>
-      </AnimatePresence>
+      {/* A keyed motion.div (no AnimatePresence/exit) so each step fades in while
+          the previous one unmounts immediately. An exit animation here deadlocked
+          against the shared-layout (`layoutId`) animations inside interactive steps
+          like the sort question: AnimatePresence would wait for the old step's
+          `layoutId` elements to resolve against the next step, but never finished
+          exiting it — leaving the following multi-stage step stuck unmounted (a
+          blank card). Unmounting the old step synchronously avoids that stall. */}
+      <motion.div
+        key={state.currentStepIndex}
+        initial={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, y: 16 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
+      >
+        <LessonStepRenderer
+          step={state.currentStep ?? lesson.steps[state.currentStepIndex] ?? lesson.steps[0]}
+          feedbackState={state.feedbackState}
+          selectedChoice={state.selectedChoice}
+          questionView={state.questionView}
+          lessonComplete={state.progress.completed}
+          reviewMode={reviewMode}
+          hasNextStep={hasNextStep}
+          onSubmitAnswer={submitAnswer}
+          onAdvance={advanceStep}
+          onRevealHint={revealHint}
+          onRevealAnswer={revealAnswer}
+        />
+      </motion.div>
       {state.progress.completed && (
         <Box sx={{ mt: 2 }}>
           <Typography variant="h6" color="success.main">
@@ -288,7 +332,12 @@ export default function LessonPlayerPage() {
                 Continue to next lesson
               </Button>
             )}
-            <Button component={RouterLink} to="/course" variant={nextLesson ? 'outlined' : 'contained'}>
+            {practiceConceptId && (
+              <Button component={RouterLink} to={practiceLink} variant={nextLesson ? 'outlined' : 'contained'} color="secondary">
+                Practice this concept
+              </Button>
+            )}
+            <Button component={RouterLink} to="/course" variant="outlined">
               Return home
             </Button>
             <Button variant="outlined" onClick={restartLesson}>
@@ -297,6 +346,34 @@ export default function LessonPlayerPage() {
           </Stack>
         </Box>
       )}
+
+      <Snackbar
+        open={practiceUnlockOpen}
+        autoHideDuration={9000}
+        onClose={() => setPracticeUnlockOpen(false)}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
+      >
+        <Alert
+          severity="success"
+          variant="filled"
+          onClose={() => setPracticeUnlockOpen(false)}
+          sx={{ alignItems: 'center', boxShadow: '0 12px 30px rgba(31,157,116,0.35)' }}
+          action={
+            <Button
+              component={RouterLink}
+              to={practiceLink}
+              size="small"
+              color="inherit"
+              sx={{ fontWeight: 800 }}
+              onClick={() => setPracticeUnlockOpen(false)}
+            >
+              Practice now
+            </Button>
+          }
+        >
+          Nice work! Practice for {practiceConceptLabel ?? 'this concept'} is unlocked.
+        </Alert>
+      </Snackbar>
     </Container>
   );
 }

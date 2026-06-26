@@ -1,4 +1,4 @@
-import { GoogleAuthProvider, User, signInWithEmailAndPassword, signInWithPopup, createUserWithEmailAndPassword, signOut } from 'firebase/auth';
+import { GoogleAuthProvider, User, signInWithEmailAndPassword, signInWithPopup, createUserWithEmailAndPassword } from 'firebase/auth';
 import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { FirebaseError } from 'firebase/app';
 import { auth, db } from '../firebase';
@@ -100,9 +100,4 @@ export async function firebaseSignUpWithEmail(email: string, password: string) {
   if (credential.user) {
     await ensureUserProfile(credential.user);
   }
-}
-
-export async function firebaseSignOut() {
-  if (!auth) return;
-  await signOut(auth);
 }

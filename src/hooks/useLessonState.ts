@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Lesson, LessonStep, ProblemFormat, ProblemStep } from '../models/lesson';
-import { isStageCorrect, numericAnswersMatch } from '../services/answerCheck';
+import {
+  isOrderCorrect,
+  isSortCorrect,
+  isStageCorrect,
+  numericAnswersMatch,
+  serializeOrderAnswer,
+  serializeSortAnswer,
+} from '../services/answerCheck';
 import {
   calculateLessonProgress,
   initializeProgress,
@@ -38,15 +45,6 @@ const initialQuestionView: QuestionView = {
   revealedStages: [],
 };
 
-export interface LessonState {
-  currentStepIndex: number;
-  currentStep: LessonStep | null;
-  feedbackState: FeedbackState;
-  selectedChoice: string | null;
-  questionView: QuestionView;
-  progress: ReturnType<typeof initializeProgress>;
-}
-
 function applyVariant(step: LessonStep, variantIndices: Record<string, number>): LessonStep {
   if (step.type !== 'problem') return step;
   const idx = variantIndices[step.stepId];
@@ -68,6 +66,17 @@ function problemFormat(step: ProblemStep): ProblemFormat {
  */
 function isNumericEntryFormat(format: ProblemFormat): boolean {
   return format === 'free-response' || format === 'slider';
+}
+
+/**
+ * The canonical correct answer string for the interaction formats (`sort` and
+ * `order`), used to restore a solved question and to power "Reveal answer".
+ * Returns null for any other format.
+ */
+function interactionSolution(step: ProblemStep, format: ProblemFormat): string | null {
+  if (format === 'sort') return serializeSortAnswer(step.sortSolution ?? {});
+  if (format === 'order') return serializeOrderAnswer(step.orderSolution ?? []);
+  return null;
 }
 
 /** A snapshot of the transient question UI for a single step. */
@@ -107,9 +116,10 @@ function computeRestoredView(step: LessonStep, stepAttempts: Record<string, Step
           },
         };
       }
+      const interaction = interactionSolution(problem, format);
       return {
         feedbackState: 'correct',
-        selectedChoice: isNumericEntryFormat(format) ? problem.acceptedAnswer ?? '' : problem.answer ?? null,
+        selectedChoice: interaction ?? (isNumericEntryFormat(format) ? problem.acceptedAnswer ?? '' : problem.answer ?? null),
         questionView: initialQuestionView,
       };
     }
@@ -340,9 +350,14 @@ export function useLessonState(lesson: Lesson | null, userId?: string, options?:
         return;
       }
 
-      const correct = isNumericEntryFormat(format)
-        ? numericAnswersMatch(answer, step.acceptedAnswer ?? '', step.tolerance)
-        : answer === step.answer;
+      const correct =
+        format === 'sort'
+          ? isSortCorrect(step.sortSolution ?? {}, answer)
+          : format === 'order'
+            ? isOrderCorrect(step.orderSolution ?? [], answer)
+            : isNumericEntryFormat(format)
+              ? numericAnswersMatch(answer, step.acceptedAnswer ?? '', step.tolerance)
+              : answer === step.answer;
 
       setSelectedChoice(answer);
       setFeedbackState(correct ? 'correct' : 'incorrect');
@@ -370,7 +385,7 @@ export function useLessonState(lesson: Lesson | null, userId?: string, options?:
     let total = 0;
     if (format === 'multi-stage') {
       total = step.stages?.[questionView.activeStageIndex]?.hints?.length ?? 0;
-    } else if (isNumericEntryFormat(format)) {
+    } else if (isNumericEntryFormat(format) || format === 'sort' || format === 'order') {
       total = step.hints?.length ?? 0;
     }
     if (total === 0) return;
@@ -427,6 +442,19 @@ export function useLessonState(lesson: Lesson | null, userId?: string, options?:
         setFeedbackState('idle');
         setSelectedChoice(null);
       }
+      return;
+    }
+
+    const interaction = interactionSolution(step, format);
+    if (interaction !== null) {
+      const isFinalStep = currentStepIndex === lesson.steps.length - 1;
+      setSelectedChoice(interaction);
+      setFeedbackState('revealed');
+      recordAttempt(step.stepId, {
+        correctFirstAttempt: false,
+        lastResult: 'correct',
+        completed: isFinalStep,
+      });
       return;
     }
 

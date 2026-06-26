@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Box, Button, Chip, CircularProgress, Container, Stack, Typography } from '@mui/material';
+import { Box, Button, Chip, CircularProgress, Container, Stack, Tooltip, Typography } from '@mui/material';
 import { motion, useReducedMotion } from 'framer-motion';
 import { Link as RouterLink } from 'react-router-dom';
 import { fetchAllLessons, FetchAllLessonsResult } from '../services/lessonService';
@@ -8,6 +8,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { loadUserSummary, UserSummary } from '../services/progressService';
 import { computeLessonStates, getEffectiveStatus } from '../services/lessonProgression';
 import CourseMap from '../components/course/CourseMap';
+import SoundToggle from '../components/SoundToggle';
 
 function LegendDot({ color, label }: { color: string; label: string }) {
   return (
@@ -172,6 +173,10 @@ export default function CoursePathPage() {
   const currentState = states.find((state) => state.isCurrent);
   const allCompleted = states.length > 0 && completedCount === states.length;
   const allMastered = states.length > 0 && masteredCount === states.length;
+  // Practice opens once any lesson is done; the final exam stays locked until the
+  // whole path is complete. Both gates mirror services/practiceAccess.
+  const practiceUnlocked = completedCount > 0;
+  const examUnlocked = allCompleted;
 
   if (loading) {
     return (
@@ -198,13 +203,40 @@ export default function CoursePathPage() {
             Build an intuition for chance and learn to predict, count, and reason about uncertain events.
           </Typography>
         </Box>
-        <Stack direction="row" spacing={1}>
+        <Stack direction="row" spacing={1} sx={{ flexWrap: 'wrap', gap: 1 }}>
+          {practiceUnlocked ? (
+            <Button component={RouterLink} to="/practice" variant="contained" size="small">
+              Practice
+            </Button>
+          ) : (
+            <Tooltip title="Complete your first lesson to unlock practice" arrow>
+              <span>
+                <Button variant="contained" size="small" disabled>
+                  Practice
+                </Button>
+              </span>
+            </Tooltip>
+          )}
+          {examUnlocked ? (
+            <Button component={RouterLink} to="/exam" variant="outlined" size="small" color="secondary">
+              Final exam
+            </Button>
+          ) : (
+            <Tooltip title="Complete all lessons to unlock the final exam" arrow>
+              <span>
+                <Button variant="outlined" size="small" color="secondary" disabled>
+                  Final exam 🔒
+                </Button>
+              </span>
+            </Tooltip>
+          )}
           <Button component={RouterLink} to="/" variant="text" size="small">
             Home
           </Button>
           <Button component={RouterLink} to="/profile" variant="outlined" size="small">
             Profile
           </Button>
+          <SoundToggle />
         </Stack>
       </Stack>
 

@@ -216,7 +216,7 @@ export default function LandingPage() {
           What you'll learn
         </Typography>
         <Typography variant="body1" color="text.secondary">
-          Five short lessons build on each other. Finish one to unlock the next stop on the map.
+          Seven short lessons build on each other. Finish one to unlock the next stop on the map.
         </Typography>
       </Box>
 

@@ -1,10 +1,14 @@
+import { useEffect } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { CssBaseline, ThemeProvider, createTheme } from '@mui/material';
+import { playClick } from './services/soundService';
 import LandingPage from './routes/LandingPage';
 import SignInPage from './routes/SignInPage';
 import CoursePathPage from './routes/CoursePathPage';
 import LessonPlayerPage from './routes/LessonPlayerPage';
 import ProfilePage from './routes/ProfilePage';
+import PracticePage from './routes/PracticePage';
+import ExamPage from './routes/ExamPage';
 import { AuthProvider } from './contexts/AuthContext';
 
 const theme = createTheme({
@@ -61,6 +65,26 @@ const theme = createTheme({
 });
 
 function App() {
+  // One delegated listener plays a soft click for any button press app-wide,
+  // so individual components never need to opt in. `click` (not pointerdown)
+  // fires once per activation, including keyboard Enter/Space on buttons, and
+  // avoids double-firing. The AudioContext is created lazily inside playClick,
+  // and this click is itself the required user gesture to unlock audio.
+  useEffect(() => {
+    const handleClick = (event: MouseEvent) => {
+      const target = event.target as Element | null;
+      if (!target) return;
+      const interactive = target.closest('button, [role="button"], .MuiButtonBase-root');
+      if (!interactive) return;
+      if (interactive.getAttribute('aria-disabled') === 'true' || (interactive as HTMLButtonElement).disabled) {
+        return;
+      }
+      playClick();
+    };
+    document.addEventListener('click', handleClick);
+    return () => document.removeEventListener('click', handleClick);
+  }, []);
+
   return (
     <ThemeProvider theme={theme}>
       <CssBaseline />
@@ -70,6 +94,8 @@ function App() {
           <Route path="/signin" element={<SignInPage />} />
           <Route path="/course" element={<CoursePathPage />} />
           <Route path="/lesson/:lessonId" element={<LessonPlayerPage />} />
+          <Route path="/practice" element={<PracticePage />} />
+          <Route path="/exam" element={<ExamPage />} />
           <Route path="/profile" element={<ProfilePage />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

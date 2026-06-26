@@ -1,0 +1,8 @@
+node_modules/
+lib/
+
+# Local Firebase env / secrets, never commit
+.env
+.env.*
+.runtimeconfig.json
+*.local

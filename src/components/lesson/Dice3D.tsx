@@ -424,5 +424,3 @@ export function Dice3D({
     </Box>
   );
 }
-
-export default Dice3D;

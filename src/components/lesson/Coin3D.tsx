@@ -253,5 +253,3 @@ export function Coin3D({
     </Box>
   );
 }
-
-export default Coin3D;

@@ -1,16 +1,27 @@
 import { Box, Button, Card, CardContent, Chip, FormControlLabel, Radio, RadioGroup, Stack, TextField, Typography } from '@mui/material';
 import { memo, useEffect, useState } from 'react';
+import { useParams } from 'react-router-dom';
 import { motion, useReducedMotion } from 'framer-motion';
 import { EmbeddedDemo, LessonStep, ProblemChoice, ProblemStep, QuestionStage } from '../../models/lesson';
 import type { QuestionView } from '../../hooks/useLessonState';
+import { parseSortAnswer, serializeOrderAnswer } from '../../services/answerCheck';
+import { OrderInteraction, SortInteraction, scrambleOrderIds } from './SortOrderInteraction';
+import { ArcadeRingsLab } from './ArcadeRingsLab';
+import { BayesFrequencyLab, BayesScreeningSliderLab } from './BayesFrequencyLab';
+import { conceptsForLessonId } from '../../services/ai/conceptSchemas';
+import type { ConceptId } from '../../services/ai/types';
+import { aiExplainConceptAnother, aiExplainWrongAnswer, conceptHint, isAIEnabled } from '../../services/ai/aiService';
+import { AIAssistPanel } from './AIAssistPanel';
 import { CoinFlipSimulator } from './CoinFlipSimulator';
 import { DiceRollSimulator } from './DiceRollSimulator';
 import {
   AreaModelLab,
+  BayesTableLab,
   CompoundEventsLab,
   DiceDistributionLab,
   DoubleCountTallyLab,
   DrawDependenceLab,
+  ExpectedValueLab,
   MutuallyExclusiveLab,
   OutcomeCountLab,
   OverlapSliderLab,
@@ -25,6 +36,138 @@ const defaultQuestionView: QuestionView = {
   resolvedStages: [],
   revealedStages: [],
 };
+
+/**
+ * Initial draft for a step's answer input. For `order` problems we seed a STABLE
+ * scrambled arrangement so the interaction never opens already solved; the
+ * scramble is deterministically derived from the step id, so it survives
+ * re-renders, restore, reveal, and reload without reshuffling mid-attempt. All
+ * other formats start blank — or, for an already-answered step, at the restored
+ * selectedChoice.
+ */
+function initialDraftForStep(step: LessonStep, selectedChoice: string | null): string {
+  if (selectedChoice != null) return selectedChoice;
+  if (step.type === 'problem') {
+    const problem = step as ProblemStep;
+    if (problem.format === 'order' && problem.orderItems && problem.orderItems.length > 0) {
+      return serializeOrderAnswer(
+        scrambleOrderIds(
+          problem.orderItems.map((item) => item.id),
+          problem.orderSolution ?? [],
+          problem.stepId,
+        ),
+      );
+    }
+  }
+  return '';
+}
+
+/**
+ * In-lesson "Explain my answer" affordance. Shown only when AI is enabled so
+ * the MVP lesson flow is unchanged with AI off. The explanation is grounded in
+ * the deterministic solver answer (`correctAnswer`) and tuned to what the
+ * learner actually entered — the model is told never to contradict the answer.
+ */
+function WrongAnswerAssist({
+  conceptId,
+  prompt,
+  learnerAnswer,
+  correctAnswer,
+}: {
+  conceptId: ConceptId;
+  prompt: string;
+  learnerAnswer: string;
+  correctAnswer: string;
+}) {
+  const [loading, setLoading] = useState(false);
+  const [text, setText] = useState<string | undefined>();
+  const [usedAI, setUsedAI] = useState(false);
+
+  // Only an additive AI affordance: hidden entirely when AI is off so it never
+  // just parrots the lesson's own hints. The model-backed explanation is tuned
+  // to the learner's actual answer; the deterministic path is not worth showing.
+  if (!isAIEnabled()) return null;
+
+  const run = async () => {
+    if (loading) return;
+    setLoading(true);
+    try {
+      const result = await aiExplainWrongAnswer({
+        conceptId,
+        prompt,
+        learnerAnswer,
+        correctAnswer,
+        params: {},
+      });
+      // Only surface model prose; the deterministic fallback states the answer,
+      // which would undercut the lesson's reveal-on-demand flow. When AI is off
+      // (or unavailable) show an answer-free concept nudge instead.
+      setText(result.usedAI ? result.explanation : conceptHint(conceptId));
+      setUsedAI(result.usedAI);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <Box sx={{ mt: 1.5 }}>
+      {!text && !loading && (
+        <Button variant="outlined" size="small" onClick={run}>
+          Get a hint on your answer
+        </Button>
+      )}
+      {(loading || text) && <AIAssistPanel title="A nudge on your thinking" loading={loading} text={text} aiTag={usedAI} />}
+    </Box>
+  );
+}
+
+/**
+ * In-lesson "Explain this another way" affordance for concept steps. Gated on
+ * AI being enabled. Offers an alternate framing of the concept on demand.
+ */
+function ConceptAnotherAssist({ conceptId }: { conceptId: ConceptId }) {
+  const [loading, setLoading] = useState(false);
+  const [text, setText] = useState<string | undefined>();
+  const [usedAI, setUsedAI] = useState(false);
+
+  // Additive only: hidden when AI is off (the offline fallback just restates the
+  // concept's built-in intuition, which adds nothing over the lesson text).
+  if (!isAIEnabled()) return null;
+
+  const run = async () => {
+    if (loading) return;
+    setLoading(true);
+    try {
+      const result = await aiExplainConceptAnother({ conceptId });
+      setText(result.explanation);
+      setUsedAI(result.usedAI);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <Box sx={{ mb: 2 }}>
+      {!text && !loading && (
+        <Button
+          variant="outlined"
+          color="primary"
+          onClick={run}
+          sx={{ fontWeight: 700, px: 2.5, py: 1 }}
+        >
+          Explain this another way
+        </Button>
+      )}
+      {(loading || text) && <AIAssistPanel title="Another way to see it" loading={loading} text={text} aiTag={usedAI} />}
+    </Box>
+  );
+}
+
+/** Resolve the primary concept a lesson teaches, for grounding AI affordances. */
+function useLessonConcept(): ConceptId {
+  const { lessonId } = useParams<{ lessonId: string }>();
+  return conceptsForLessonId(lessonId ?? '')[0] ?? 'single-event';
+}
 
 // Minimal markdown-bold support for authored prompt text: turns **bold** into a
 // <strong> run while leaving the rest of the string verbatim. Lesson content
@@ -233,6 +376,16 @@ const EmbeddedDemoView = memo(function EmbeddedDemoView({ demo }: { demo: Embedd
       return <ProbabilitySliderLab />;
     case 'overlap-slider':
       return <OverlapSliderLab />;
+    case 'expected-value-spinner':
+      return <ExpectedValueLab target={demo.target} />;
+    case 'arcade-rings':
+      return <ArcadeRingsLab target={demo.target} />;
+    case 'bayes-frequency':
+      return <BayesTableLab target={demo.target} />;
+    case 'bayes-frequency-lab':
+      return <BayesFrequencyLab />;
+    case 'bayes-screening-slider':
+      return <BayesScreeningSliderLab />;
     default:
       return null;
   }
@@ -265,6 +418,8 @@ function ControlledSliderLab({
   switch (demoType) {
     case 'overlap-slider':
       return <OverlapSliderLab {...props} />;
+    case 'bayes-screening-slider':
+      return <BayesScreeningSliderLab {...props} />;
     case 'probability-slider':
     default:
       return <ProbabilitySliderLab {...props} />;
@@ -542,13 +697,21 @@ interface StageBlockProps {
   revealedHints: number;
   draft: string;
   selectedChoice: string | null;
+  /** Concept this lesson teaches, for grounding the AI "explain my answer" affordance. */
+  conceptId: ConceptId;
+  /** The parent question text, used as context for the AI explanation. */
+  questionPrompt: string;
   onDraftChange: (value: string) => void;
   onSubmitAnswer: (value: string) => void;
   onRevealHint: () => void;
   onRevealAnswer: () => void;
 }
 
-function StageBlock({ stage, index, isActive, resolved, revealed, feedbackState, revealedHints, draft, selectedChoice, onDraftChange, onSubmitAnswer, onRevealHint, onRevealAnswer }: StageBlockProps) {
+function StageBlock({ stage, index, isActive, resolved, revealed, feedbackState, revealedHints, draft, selectedChoice, conceptId, questionPrompt, onDraftChange, onSubmitAnswer, onRevealHint, onRevealAnswer }: StageBlockProps) {
+  const stageChoices = stage.choices ?? [];
+  const stageLearnerLabel = stageChoices.find((choice) => choice.value === selectedChoice)?.label ?? selectedChoice ?? '';
+  const stageCorrectLabel = stageChoices.find((choice) => choice.value === stage.answer)?.label ?? stage.answer ?? '';
+  const stagePrompt = questionPrompt ? `${questionPrompt} ${stage.prompt}` : stage.prompt;
   const solvedAndLocked = resolved && !isActive;
   const answered = feedbackState === 'correct' || feedbackState === 'revealed';
   // A revealed stage is "resolved" but must read as revealed, never correct: its
@@ -624,11 +787,19 @@ function StageBlock({ stage, index, isActive, resolved, revealed, feedbackState,
                 incorrectText={stage.incorrectFeedback ?? 'Not quite. Use a hint and try again.'}
                 revealedAnswer={stage.acceptedAnswer}
               />
+              {(feedbackState === 'incorrect' || feedbackState === 'revealed') && (
+                <WrongAnswerAssist
+                  conceptId={conceptId}
+                  prompt={stagePrompt}
+                  learnerAnswer={selectedChoice ?? ''}
+                  correctAnswer={stage.acceptedAnswer ?? ''}
+                />
+              )}
             </>
           ) : (
             <>
               <ChoiceList
-                choices={stage.choices ?? []}
+                choices={stageChoices}
                 draft={draft}
                 onDraftChange={onDraftChange}
                 selectedChoice={selectedChoice}
@@ -637,6 +808,14 @@ function StageBlock({ stage, index, isActive, resolved, revealed, feedbackState,
                 incorrectFeedback={stage.incorrectFeedback}
                 onSubmit={onSubmitAnswer}
               />
+              {feedbackState === 'incorrect' && (
+                <WrongAnswerAssist
+                  conceptId={conceptId}
+                  prompt={stagePrompt}
+                  learnerAnswer={stageLearnerLabel}
+                  correctAnswer={stageCorrectLabel}
+                />
+              )}
             </>
           )}
         </>
@@ -660,7 +839,8 @@ export function LessonStepRenderer({
 }: LessonStepRendererProps) {
   const activeStageIndex = questionView.activeStageIndex;
   const prefersReducedMotion = useReducedMotion();
-  const [draft, setDraft] = useState(selectedChoice ?? '');
+  const lessonConcept = useLessonConcept();
+  const [draft, setDraft] = useState(() => initialDraftForStep(step, selectedChoice));
   // Explore-phase gate: a problem step can open with concept content + its demo
   // and hide the question until the learner clicks Continue. Tracked locally so
   // it does not touch persisted progress; reset whenever the step changes.
@@ -675,7 +855,7 @@ export function LessonStepRenderer({
   const showInfoAdvance = reviewMode ? hasNextStep : true;
 
   useEffect(() => {
-    setDraft(selectedChoice ?? '');
+    setDraft(initialDraftForStep(step, selectedChoice));
   }, [selectedChoice, step.stepId, activeStageIndex]);
 
   useEffect(() => {
@@ -708,6 +888,7 @@ export function LessonStepRenderer({
           )}
           {!step.demoFirst && conceptDemoBlock}
           {step.bodyAfterDemo && <ConceptBody body={step.bodyAfterDemo} />}
+          <ConceptAnotherAssist conceptId={lessonConcept} />
           {showInfoAdvance && (
             <Button variant="contained" onClick={onAdvance}>
               Next
@@ -830,6 +1011,8 @@ export function LessonStepRenderer({
                         revealedHints={isActive ? questionView.revealedHints : 0}
                         draft={draft}
                         selectedChoice={selectedChoice}
+                        conceptId={lessonConcept}
+                        questionPrompt={problem.question ?? ''}
                         onDraftChange={setDraft}
                         onSubmitAnswer={onSubmitAnswer}
                         onRevealHint={onRevealHint}
@@ -893,6 +1076,14 @@ export function LessonStepRenderer({
             incorrectText={problem.incorrectFeedback ?? 'Not quite. Use a hint and try again.'}
             revealedAnswer={problem.acceptedAnswer}
           />
+          {(feedbackState === 'incorrect' || feedbackState === 'revealed') && (
+            <WrongAnswerAssist
+              conceptId={lessonConcept}
+              prompt={problem.question}
+              learnerAnswer={selectedChoice ?? ''}
+              correctAnswer={problem.acceptedAnswer ?? ''}
+            />
+          )}
           {showQuestionAdvance && (
             <Button variant="contained" size="large" onClick={onAdvance} sx={{ mt: 2 }}>
               Continue
@@ -953,6 +1144,134 @@ export function LessonStepRenderer({
             incorrectText={problem.incorrectFeedback ?? 'Not quite. Use a hint and try again.'}
             revealedAnswer={problem.acceptedAnswer}
           />
+          {(feedbackState === 'incorrect' || feedbackState === 'revealed') && (
+            <WrongAnswerAssist
+              conceptId={lessonConcept}
+              prompt={problem.question}
+              learnerAnswer={selectedChoice ?? ''}
+              correctAnswer={problem.acceptedAnswer ?? ''}
+            />
+          )}
+          {showQuestionAdvance && (
+            <Button variant="contained" size="large" onClick={onAdvance} sx={{ mt: 2 }}>
+              Continue
+            </Button>
+          )}
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (format === 'sort') {
+    const items = problem.sortItems ?? [];
+    const buckets = problem.sortBuckets ?? [];
+    const placedCount = Object.keys(parseSortAnswer(draft)).length;
+    const allPlaced = items.length > 0 && placedCount === items.length;
+    const demoBlock = problem.demo ? (
+      <Box sx={{ mb: 2.5 }}>
+        <EmbeddedDemoView demo={problem.demo} />
+      </Box>
+    ) : null;
+    return (
+      <Card sx={{ border: '1px solid rgba(31,36,48,0.08)' }}>
+        <CardContent sx={{ p: { xs: 2.5, md: 4 } }}>
+          <Typography variant="h4" gutterBottom>
+            {problem.title}
+          </Typography>
+          {problem.description && <StepDescription text={problem.description} />}
+          {problem.demoFirst && demoBlock}
+          <Typography variant="body1" component="p" sx={{ mb: 2, lineHeight: 1.45, fontSize: { xs: '1.05rem', md: '1.16rem' } }}>
+            {renderMarkdownBold(problem.question)}
+          </Typography>
+          {!problem.demoFirst && demoBlock}
+          <SortInteraction
+            items={items}
+            buckets={buckets}
+            value={draft}
+            onChange={setDraft}
+            disabled={answered}
+            feedback={feedbackState === 'correct' ? 'correct' : feedbackState === 'incorrect' ? 'incorrect' : null}
+          />
+          <Stack direction="row" sx={{ mt: 2 }}>
+            <Button variant="contained" onClick={() => onSubmitAnswer(draft)} disabled={!allPlaced || answered}>
+              Check answer
+            </Button>
+          </Stack>
+          <HintList hints={problem.hints} revealed={questionView.revealedHints} />
+          {!answered && (
+            <RevealControls
+              hints={problem.hints}
+              revealed={questionView.revealedHints}
+              onRevealHint={onRevealHint}
+              onRevealAnswer={onRevealAnswer}
+            />
+          )}
+          <AnswerFeedback
+            state={feedbackState}
+            correctText={problem.explanation ?? ''}
+            incorrectText={problem.incorrectFeedback ?? 'Not quite. Re-check where each item belongs.'}
+          />
+          {showQuestionAdvance && (
+            <Button variant="contained" size="large" onClick={onAdvance} sx={{ mt: 2 }}>
+              Continue
+            </Button>
+          )}
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (format === 'order') {
+    const items = problem.orderItems ?? [];
+    // The learner's current arrangement (held in the draft) is the answer. The
+    // draft is seeded with a stable scramble (see initialDraftForStep), so it
+    // never opens solved; the authored order is only a defensive fallback.
+    const effectiveOrder = draft || serializeOrderAnswer(items.map((item) => item.id));
+    const demoBlock = problem.demo ? (
+      <Box sx={{ mb: 2.5 }}>
+        <EmbeddedDemoView demo={problem.demo} />
+      </Box>
+    ) : null;
+    return (
+      <Card sx={{ border: '1px solid rgba(31,36,48,0.08)' }}>
+        <CardContent sx={{ p: { xs: 2.5, md: 4 } }}>
+          <Typography variant="h4" gutterBottom>
+            {problem.title}
+          </Typography>
+          {problem.description && <StepDescription text={problem.description} />}
+          {problem.demoFirst && demoBlock}
+          <Typography variant="body1" component="p" sx={{ mb: 2, lineHeight: 1.45, fontSize: { xs: '1.05rem', md: '1.16rem' } }}>
+            {renderMarkdownBold(problem.question)}
+          </Typography>
+          {!problem.demoFirst && demoBlock}
+          <OrderInteraction
+            items={items}
+            value={draft}
+            onChange={setDraft}
+            startLabel={problem.orderStartLabel}
+            endLabel={problem.orderEndLabel}
+            disabled={answered}
+            feedback={feedbackState === 'correct' ? 'correct' : feedbackState === 'incorrect' ? 'incorrect' : null}
+          />
+          <Stack direction="row" sx={{ mt: 2 }}>
+            <Button variant="contained" onClick={() => onSubmitAnswer(effectiveOrder)} disabled={answered}>
+              Check answer
+            </Button>
+          </Stack>
+          <HintList hints={problem.hints} revealed={questionView.revealedHints} />
+          {!answered && (
+            <RevealControls
+              hints={problem.hints}
+              revealed={questionView.revealedHints}
+              onRevealHint={onRevealHint}
+              onRevealAnswer={onRevealAnswer}
+            />
+          )}
+          <AnswerFeedback
+            state={feedbackState}
+            correctText={problem.explanation ?? ''}
+            incorrectText={problem.incorrectFeedback ?? 'Not quite. Re-check the order.'}
+          />
           {showQuestionAdvance && (
             <Button variant="contained" size="large" onClick={onAdvance} sx={{ mt: 2 }}>
               Continue
@@ -964,6 +1283,9 @@ export function LessonStepRenderer({
   }
 
   // Multiple-choice (default).
+  const mcChoices = problem.choices ?? [];
+  const mcLearnerLabel = mcChoices.find((choice) => choice.value === selectedChoice)?.label ?? selectedChoice ?? '';
+  const mcCorrectLabel = mcChoices.find((choice) => choice.value === problem.answer)?.label ?? problem.answer ?? '';
   const mcDemoBlock = problem.demo ? (
     <Box sx={{ mb: problem.demoFirst ? 2.5 : 2 }}>
       <EmbeddedDemoView demo={problem.demo} />
@@ -982,7 +1304,7 @@ export function LessonStepRenderer({
         </Typography>
         {!problem.demoFirst && mcDemoBlock}
         <ChoiceList
-          choices={problem.choices ?? []}
+          choices={mcChoices}
           draft={draft}
           onDraftChange={setDraft}
           selectedChoice={selectedChoice}
@@ -991,6 +1313,14 @@ export function LessonStepRenderer({
           incorrectFeedback={problem.incorrectFeedback}
           onSubmit={onSubmitAnswer}
         />
+        {feedbackState === 'incorrect' && (
+          <WrongAnswerAssist
+            conceptId={lessonConcept}
+            prompt={problem.question}
+            learnerAnswer={mcLearnerLabel}
+            correctAnswer={mcCorrectLabel}
+          />
+        )}
         {showQuestionAdvance && (
           <Button variant="contained" size="large" onClick={onAdvance} sx={{ mt: 2 }}>
             Continue

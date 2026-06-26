@@ -11,3 +11,16 @@ serviceaccount.json
 
 serviceaccount.json
 serviceAccount*.json
+
+# Firebase local cache
+.firebase/
+
+# Scratch / scratchpad build & test output
+__fsquery.mjs
+bb.txt
+build-out*.txt
+tsc-out*.txt
+vitest-out*.txt
+repro-out.txt
+git-diffstat.txt
+git-log.txt

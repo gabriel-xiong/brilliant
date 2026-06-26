@@ -46,7 +46,7 @@ function FlameIcon({ size, active }: { size: number; active: boolean }) {
  * tooltip explaining how the streak is kept. Both the home surface and the
  * profile render this from the same summary data so there is one source of truth.
  */
-export function StreakDisplay({
+function StreakDisplay({
   currentStreak,
   longestStreak,
   variant = 'banner',

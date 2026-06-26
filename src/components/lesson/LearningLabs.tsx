@@ -2779,3 +2779,425 @@ export function DrawDependenceLab(_props: LabProps) {
     </Card>
   );
 }
+
+// ---------------------------------------------------------------------------
+// Expected-value spinner (Lesson 6). Equal-size wedges each carry a numeric
+// payoff. Spinning many times makes the OBSERVED running average drift toward
+// the computed E[X] = mean of the payoffs (each wedge equally likely), mirroring
+// the observed/expected convergence of the dice-distribution lab.
+// ---------------------------------------------------------------------------
+type SpinnerGame = { key: string; label: string; payoffs: number[] };
+
+const spinnerGames: Record<string, SpinnerGame> = {
+  // Prize spinner: payoffs 0,2,4,6 → E[X] = 12/4 = 3 points.
+  prize: { key: 'prize', label: 'Prize spinner', payoffs: [0, 2, 4, 6] },
+  // Even-odds spinner: payoffs 3,1,-1,-3 → E[X] = 0 (a fair game on its own).
+  fair: { key: 'fair', label: 'Even-odds spinner', payoffs: [3, 1, -1, -3] },
+};
+
+const wedgePalette = [
+  'rgba(15,111,104,0.9)',
+  'rgba(195,95,44,0.9)',
+  'rgba(111,63,196,0.85)',
+  'rgba(33,113,181,0.85)',
+];
+
+/** Point on a circle, measuring degrees clockwise from the top (12 o'clock). */
+function polarPoint(cx: number, cy: number, r: number, deg: number) {
+  const a = ((deg - 90) * Math.PI) / 180;
+  return { x: cx + r * Math.cos(a), y: cy + r * Math.sin(a) };
+}
+
+/** SVG path for a pie wedge from `startDeg` to `endDeg` (clockwise from top). */
+function wedgePath(cx: number, cy: number, r: number, startDeg: number, endDeg: number) {
+  const s = polarPoint(cx, cy, r, startDeg);
+  const e = polarPoint(cx, cy, r, endDeg);
+  const large = endDeg - startDeg > 180 ? 1 : 0;
+  return `M ${cx} ${cy} L ${s.x.toFixed(2)} ${s.y.toFixed(2)} A ${r} ${r} 0 ${large} 1 ${e.x.toFixed(2)} ${e.y.toFixed(2)} Z`;
+}
+
+export function ExpectedValueLab({ target }: LabProps) {
+  const [gameKey, setGameKey] = useState(target && spinnerGames[target] ? target : 'prize');
+  const game = spinnerGames[gameKey] ?? spinnerGames.prize;
+  const payoffs = game.payoffs;
+  const n = payoffs.length;
+  const slice = 360 / n;
+  const expected = payoffs.reduce((sum, value) => sum + value, 0) / n;
+  const minPayoff = Math.min(...payoffs);
+  const maxPayoff = Math.max(...payoffs);
+  const span = maxPayoff - minPayoff || 1;
+
+  const [trials, setTrials] = useState(0);
+  const [sum, setSum] = useState(0);
+  const [latest, setLatest] = useState<number | null>(null);
+  const [rotation, setRotation] = useState(0);
+  const [isRunning, setIsRunning] = useState(false);
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (intervalRef.current) clearInterval(intervalRef.current);
+    };
+  }, []);
+
+  const reset = () => {
+    if (intervalRef.current) clearInterval(intervalRef.current);
+    intervalRef.current = null;
+    setTrials(0);
+    setSum(0);
+    setLatest(null);
+    setRotation(0);
+    setIsRunning(false);
+  };
+
+  const changeGame = (_event: unknown, next: string | null) => {
+    if (!next || next === gameKey) return;
+    if (intervalRef.current) clearInterval(intervalRef.current);
+    intervalRef.current = null;
+    setGameKey(next);
+    setTrials(0);
+    setSum(0);
+    setLatest(null);
+    setRotation(0);
+    setIsRunning(false);
+  };
+
+  const spinOnce = () => {
+    if (isRunning) return;
+    const idx = Math.floor(Math.random() * n);
+    const centerDeg = idx * slice + slice / 2;
+    // Rotate the wheel clockwise so the landed wedge's center sits under the
+    // fixed pointer at the top, plus a few full turns for a satisfying spin.
+    setRotation((current) => (Math.floor(current / 360) + 5) * 360 - centerDeg);
+    setLatest(idx);
+    setTrials((current) => current + 1);
+    setSum((current) => current + payoffs[idx]);
+  };
+
+  const runBatch = (count: number) => {
+    if (intervalRef.current) clearInterval(intervalRef.current);
+    setIsRunning(true);
+    let completed = 0;
+    const chunk = count >= 100 ? 5 : 1;
+    const intervalMs = count >= 100 ? 18 : 60;
+    intervalRef.current = setInterval(() => {
+      const nextChunk = Math.min(chunk, count - completed);
+      let addSum = 0;
+      let lastIdx = latest ?? 0;
+      for (let i = 0; i < nextChunk; i += 1) {
+        const idx = Math.floor(Math.random() * n);
+        addSum += payoffs[idx];
+        lastIdx = idx;
+      }
+      setSum((current) => current + addSum);
+      setTrials((current) => current + nextChunk);
+      setLatest(lastIdx);
+      setRotation((current) => current + 150);
+      completed += nextChunk;
+      if (completed >= count) {
+        if (intervalRef.current) clearInterval(intervalRef.current);
+        intervalRef.current = null;
+        setIsRunning(false);
+      }
+    }, intervalMs);
+  };
+
+  const observedAvg = trials > 0 ? sum / trials : null;
+  const expectedPos = ((expected - minPayoff) / span) * 100;
+  const observedPos = observedAvg === null ? null : ((observedAvg - minPayoff) / span) * 100;
+  const cx = 120;
+  const cy = 120;
+  const r = 104;
+
+  return (
+    <Card variant="outlined" sx={{ mt: 2 }}>
+      <CardContent sx={{ p: { xs: 2, md: 2.5 } }}>
+        <Typography variant="h6" gutterBottom>
+          Average payoff per spin
+        </Typography>
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 2, fontSize: '1rem' }}>
+          Each equal wedge pays the points printed on it. Spin many times and the observed average payoff settles toward the expected value E[X].
+        </Typography>
+
+        <Box sx={{ mb: 2 }}>
+          <ToggleButtonGroup color="primary" exclusive size="small" value={gameKey} onChange={changeGame} aria-label="Choose a spinner">
+            {Object.values(spinnerGames).map((entry) => (
+              <ToggleButton key={entry.key} value={entry.key} sx={{ fontWeight: 700 }}>
+                {entry.label}
+              </ToggleButton>
+            ))}
+          </ToggleButtonGroup>
+        </Box>
+
+        <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: '1fr 1fr' }, gap: 2, alignItems: 'stretch' }}>
+          <Box sx={{ p: { xs: 2, md: 2.5 }, borderRadius: 4, bgcolor: 'action.hover', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1.5 }}>
+            <Box sx={{ position: 'relative', width: '100%', maxWidth: 248, mx: 'auto' }}>
+              <Box
+                component="svg"
+                viewBox="0 0 240 240"
+                role="img"
+                aria-label={`Spinner with payoffs ${payoffs.join(', ')}`}
+                sx={{
+                  width: '100%',
+                  display: 'block',
+                  transform: `rotate(${rotation}deg)`,
+                  transition: isRunning ? 'transform 0.12s linear' : 'transform 0.75s cubic-bezier(0.16, 1, 0.3, 1)',
+                }}
+              >
+                {payoffs.map((value, idx) => {
+                  const start = idx * slice;
+                  const end = (idx + 1) * slice;
+                  const mid = polarPoint(cx, cy, r * 0.62, start + slice / 2);
+                  const isLatest = latest === idx;
+                  return (
+                    <g key={idx}>
+                      <path
+                        d={wedgePath(cx, cy, r, start, end)}
+                        fill={wedgePalette[idx % wedgePalette.length]}
+                        stroke={isLatest ? '#1f2430' : '#fffaf0'}
+                        strokeWidth={isLatest ? 4 : 2}
+                      />
+                      <text x={mid.x} y={mid.y + 6} textAnchor="middle" fontWeight="900" fontSize="22" fill="#fffaf0">
+                        {value > 0 ? `+${value}` : value}
+                      </text>
+                    </g>
+                  );
+                })}
+                <circle cx={cx} cy={cy} r={16} fill="#fffaf0" stroke="#1f2430" strokeWidth={2} />
+              </Box>
+              <Box
+                aria-hidden
+                sx={{
+                  position: 'absolute',
+                  top: -2,
+                  left: '50%',
+                  transform: 'translateX(-50%)',
+                  width: 0,
+                  height: 0,
+                  borderLeft: '12px solid transparent',
+                  borderRight: '12px solid transparent',
+                  borderTop: '22px solid #1f2430',
+                  filter: 'drop-shadow(0 1px 1px rgba(0,0,0,0.25))',
+                }}
+              />
+            </Box>
+            <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap justifyContent="center">
+              <Button variant="contained" onClick={spinOnce} disabled={isRunning}>
+                Spin
+              </Button>
+              <Button variant="contained" onClick={() => runBatch(20)} disabled={isRunning}>
+                Run 20
+              </Button>
+              <Button variant="contained" onClick={() => runBatch(100)} disabled={isRunning}>
+                Run 100
+              </Button>
+              <Button variant="text" onClick={reset} disabled={trials === 0 && !isRunning}>
+                Reset
+              </Button>
+            </Stack>
+          </Box>
+
+          <Box sx={{ display: 'grid', gap: 1.5, alignContent: 'center' }}>
+            <StatCard label="Expected value E[X]" value={`${expected % 1 === 0 ? expected : expected.toFixed(2)}`} detail="Average payoff per spin, computed." tone="secondary" />
+            <StatCard
+              label="Observed average"
+              value={observedAvg === null ? '—' : observedAvg.toFixed(2)}
+              detail={trials > 0 ? `Across ${trials} ${trials === 1 ? 'spin' : 'spins'}.` : 'Spin to start collecting.'}
+              tone="success"
+            />
+            <Box>
+              <Stack direction="row" justifyContent="space-between" alignItems="baseline" sx={{ mb: 0.25 }}>
+                <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700 }}>
+                  Observed drifting toward E[X]
+                </Typography>
+                <Typography variant="caption" color="text.secondary" className="numeric">
+                  {minPayoff} … {maxPayoff}
+                </Typography>
+              </Stack>
+              <Box sx={{ position: 'relative', height: 18, borderRadius: 999, bgcolor: 'action.hover', overflow: 'visible' }}>
+                <Box sx={{ position: 'absolute', top: -3, bottom: -3, left: `${expectedPos}%`, width: 3, bgcolor: 'secondary.main', borderRadius: 1 }} />
+                {observedPos !== null && (
+                  <Box
+                    sx={{
+                      position: 'absolute',
+                      top: '50%',
+                      left: `${observedPos}%`,
+                      width: 14,
+                      height: 14,
+                      transform: 'translate(-50%, -50%)',
+                      borderRadius: '50%',
+                      bgcolor: 'primary.main',
+                      border: '2px solid #fffaf0',
+                      transition: 'left 200ms ease',
+                    }}
+                  />
+                )}
+              </Box>
+              <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mt: 1 }}>
+                <Chip label="Dot = observed" color="primary" size="small" />
+                <Chip label="Line = expected" color="secondary" size="small" />
+              </Stack>
+            </Box>
+            <Typography variant="body2" color="text.secondary">
+              E[X] = ({payoffs.map((value) => (value < 0 ? `(${value})` : value)).join(' + ')}) ÷ {n} = {expected % 1 === 0 ? expected : expected.toFixed(2)}
+            </Typography>
+          </Box>
+        </Box>
+      </CardContent>
+    </Card>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Bayes natural-frequency table (Lesson 7). A fixed population of 1,000 is split
+// by who truly has a condition (base rate) and by how each tests (sensitivity +
+// false-positive rate). The 2×2 table and the posterior P(condition | positive)
+// = true positives / all positives update live as the learner moves the
+// controls — counts of real bodies, not abstract percentages.
+// ---------------------------------------------------------------------------
+const BAYES_POPULATION = 1000;
+
+export function BayesTableLab(_props: LabProps) {
+  const [prevPct, setPrevPct] = useState(10);
+  const [sensPct, setSensPct] = useState(90);
+  const [fprPct, setFprPct] = useState(20);
+
+  const diseased = Math.round((BAYES_POPULATION * prevPct) / 100);
+  const healthy = BAYES_POPULATION - diseased;
+  const tp = Math.round((diseased * sensPct) / 100);
+  const fn = diseased - tp;
+  const fp = Math.round((healthy * fprPct) / 100);
+  const tn = healthy - fp;
+  const totalPos = tp + fp;
+  const posterior = totalPos > 0 ? tp / totalPos : 0;
+  const posteriorPct = Math.round(posterior * 1000) / 10;
+  const tpShare = totalPos > 0 ? (tp / totalPos) * 100 : 0;
+
+  const cellSx = (bg: string, border: string) => ({
+    p: 1.25,
+    borderRadius: 2,
+    bgcolor: bg,
+    border: '1.5px solid',
+    borderColor: border,
+    display: 'flex',
+    flexDirection: 'column' as const,
+    gap: 0.25,
+  });
+
+  const sliderRow = (
+    label: string,
+    value: number,
+    setValue: (next: number) => void,
+    min: number,
+    max: number,
+    step: number,
+    detail: string,
+  ) => (
+    <Box>
+      <Stack direction="row" justifyContent="space-between" alignItems="baseline">
+        <Typography variant="body2" sx={{ fontWeight: 800 }}>
+          {label}
+        </Typography>
+        <Typography variant="body2" className="numeric" sx={{ fontWeight: 800 }}>
+          {value}%
+        </Typography>
+      </Stack>
+      <Slider
+        value={value}
+        min={min}
+        max={max}
+        step={step}
+        size="small"
+        valueLabelDisplay="auto"
+        onChange={(_, next) => setValue(Array.isArray(next) ? next[0] : next)}
+        aria-label={label}
+        getAriaValueText={(v) => `${label} ${v} percent`}
+      />
+      <Typography variant="caption" color="text.secondary">
+        {detail}
+      </Typography>
+    </Box>
+  );
+
+  return (
+    <Card variant="outlined" sx={{ mt: 2 }}>
+      <CardContent sx={{ p: { xs: 2, md: 2.5 } }}>
+        <Typography variant="h6" gutterBottom>
+          {BAYES_POPULATION.toLocaleString()} people, split by truth and by test
+        </Typography>
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 2, fontSize: '1rem' }}>
+          Of {BAYES_POPULATION.toLocaleString()} people, {diseased} truly have the condition and {healthy} do not. The table counts how each group tests, so the posterior is just true positives out of everyone who tests positive.
+        </Typography>
+
+        <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: '1.25fr 0.75fr' }, gap: 2, alignItems: 'stretch' }}>
+          <Box>
+            <Box sx={{ display: 'grid', gridTemplateColumns: '0.8fr 1fr 1fr', gap: 0.75 }}>
+              <Box />
+              <Typography variant="caption" sx={{ fontWeight: 800, textAlign: 'center', alignSelf: 'end' }}>
+                Tests positive
+              </Typography>
+              <Typography variant="caption" sx={{ fontWeight: 800, textAlign: 'center', alignSelf: 'end' }}>
+                Tests negative
+              </Typography>
+
+              <Typography variant="caption" sx={{ fontWeight: 800, alignSelf: 'center' }}>
+                Has condition
+              </Typography>
+              <Box sx={cellSx('rgba(46,125,50,0.16)', 'rgba(46,125,50,0.55)')}>
+                <Typography variant="caption" color="text.secondary">True positives</Typography>
+                <Typography variant="h6" className="numeric" sx={{ fontWeight: 900, lineHeight: 1 }}>{tp}</Typography>
+              </Box>
+              <Box sx={cellSx('rgba(120,120,120,0.12)', 'rgba(120,120,120,0.4)')}>
+                <Typography variant="caption" color="text.secondary">False negatives</Typography>
+                <Typography variant="h6" className="numeric" sx={{ fontWeight: 900, lineHeight: 1 }}>{fn}</Typography>
+              </Box>
+
+              <Typography variant="caption" sx={{ fontWeight: 800, alignSelf: 'center' }}>
+                No condition
+              </Typography>
+              <Box sx={cellSx('rgba(237,108,2,0.16)', 'rgba(237,108,2,0.55)')}>
+                <Typography variant="caption" color="text.secondary">False positives</Typography>
+                <Typography variant="h6" className="numeric" sx={{ fontWeight: 900, lineHeight: 1 }}>{fp}</Typography>
+              </Box>
+              <Box sx={cellSx('rgba(33,113,181,0.12)', 'rgba(33,113,181,0.4)')}>
+                <Typography variant="caption" color="text.secondary">True negatives</Typography>
+                <Typography variant="h6" className="numeric" sx={{ fontWeight: 900, lineHeight: 1 }}>{tn}</Typography>
+              </Box>
+            </Box>
+
+            <Box sx={{ mt: 2 }}>
+              <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700, display: 'block', mb: 0.5 }}>
+                Of {totalPos} positive tests, the green share truly has the condition:
+              </Typography>
+              <Box sx={{ display: 'flex', height: 22, borderRadius: 999, overflow: 'hidden', border: '1px solid', borderColor: 'divider' }}>
+                <Box sx={{ width: `${tpShare}%`, bgcolor: 'rgba(46,125,50,0.85)', transition: 'width 200ms ease' }} />
+                <Box sx={{ width: `${100 - tpShare}%`, bgcolor: 'rgba(237,108,2,0.85)', transition: 'width 200ms ease' }} />
+              </Box>
+              <Stack direction="row" spacing={1} sx={{ mt: 0.75 }} flexWrap="wrap" useFlexGap>
+                <Chip label={`${tp} true positives`} size="small" sx={{ bgcolor: 'rgba(46,125,50,0.16)', fontWeight: 700 }} />
+                <Chip label={`${fp} false positives`} size="small" sx={{ bgcolor: 'rgba(237,108,2,0.16)', fontWeight: 700 }} />
+              </Stack>
+            </Box>
+          </Box>
+
+          <Box sx={{ display: 'grid', gap: 1.5, alignContent: 'start' }}>
+            <Box sx={{ p: 2, borderRadius: 4, bgcolor: 'rgba(46,125,50,0.12)' }}>
+              <Typography variant="caption" color="text.secondary" sx={{ textTransform: 'uppercase', letterSpacing: 0.9 }}>
+                P(condition | positive)
+              </Typography>
+              <Typography variant="h4" className="numeric" sx={{ fontWeight: 900, lineHeight: 1.05 }}>
+                {posteriorPct}%
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                {tp} true / {totalPos} positive {totalPos > 0 ? `= ${tp}/${totalPos}` : ''}
+              </Typography>
+            </Box>
+            {sliderRow('Base rate', prevPct, setPrevPct, 1, 50, 1, 'Share of the population with the condition.')}
+            {sliderRow('Test sensitivity', sensPct, setSensPct, 50, 100, 5, 'True-positive rate among those who have it.')}
+            {sliderRow('False-positive rate', fprPct, setFprPct, 0, 50, 5, 'Healthy people the test flags by mistake.')}
+          </Box>
+        </Box>
+      </CardContent>
+    </Card>
+  );
+}

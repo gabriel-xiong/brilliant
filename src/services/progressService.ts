@@ -1,7 +1,6 @@
 import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { Lesson } from '../models/lesson';
 import { db } from '../firebase';
-import { isFirestorePermissionError } from './firebaseUtils';
 
 export interface StepProgress {
   attempts: number;
@@ -26,6 +25,25 @@ export interface MasterySummaryEntry {
   lastUpdated: string;
 }
 
+/**
+ * Rolling per-concept practice/exam performance, keyed by ConceptId. This is the
+ * source of truth for the dashboard's accuracy/level stats and for seeding the
+ * adaptive practice level to where the learner actually left off (rather than
+ * only their lesson mastery).
+ */
+export interface PracticeConceptStat {
+  /** Total problems answered for this concept across all sessions. */
+  answered: number;
+  /** Total answered correctly (first attempt). */
+  correct: number;
+  /** Highest difficulty level ever reached. */
+  bestLevel: number;
+  /** Most recent level reached (used to resume adaptive difficulty). */
+  lastLevel: number;
+  /** ISO timestamp of the last practiced session. */
+  lastPracticed: string;
+}
+
 export interface UserSummary {
   displayName?: string | null;
   email?: string | null;
@@ -35,6 +53,8 @@ export interface UserSummary {
   currentStreak: number;
   longestStreak: number;
   masterySummary: Record<string, MasterySummaryEntry>;
+  /** Per-concept practice/exam stats (absent until the learner practices). */
+  practiceStats?: Record<string, PracticeConceptStat>;
 }
 
 const progressStorageKeyPrefix = 'brilliant-progress-';
@@ -244,14 +264,6 @@ export async function loadLessonProgress(userId: string, lessonId: string): Prom
 
   return loadProgress(lessonId, userId);
 }
-
-export function getProgressFallbackReason(error: unknown, defaultReason: string) {
-  if (isFirestorePermissionError(error)) {
-    return 'Firestore permission denied while loading progress. Ensure Cloud Firestore rules allow reads for authenticated users.';
-  }
-  return defaultReason;
-}
-
 export async function saveLessonProgress(userId: string, progress: LessonProgress) {
   // Establish the learner's previously stored high-water mark so a replay can
   // never persist a downgraded mastery status. Local storage is always kept in
@@ -320,6 +332,38 @@ export async function saveMasterySummary(userId: string, progress: LessonProgres
     );
   } catch (error) {
     console.warn('Failed to save mastery summary in Firestore.', error);
+  }
+}
+
+/**
+ * Accumulate a practice/exam result for one concept into the user summary:
+ * adds to the answered/correct totals, keeps the highest level ever reached,
+ * records the most recent level (so adaptive difficulty resumes there), and
+ * stamps the time. No-op for guests or when Firestore is unavailable, since
+ * guest summaries are not persisted.
+ */
+export async function recordPracticeResult(
+  userId: string,
+  conceptId: string,
+  result: { answered: number; correct: number; levelReached: number },
+): Promise<void> {
+  if (!db || !userId || result.answered <= 0) return;
+  try {
+    const userRef = doc(db, 'users', userId);
+    const snapshot = await getDoc(userRef);
+    const existing = snapshot.exists()
+      ? (snapshot.data() as UserSummary).practiceStats?.[conceptId]
+      : undefined;
+    const merged: PracticeConceptStat = {
+      answered: (existing?.answered ?? 0) + result.answered,
+      correct: (existing?.correct ?? 0) + result.correct,
+      bestLevel: Math.max(existing?.bestLevel ?? 0, result.levelReached),
+      lastLevel: result.levelReached,
+      lastPracticed: new Date().toISOString(),
+    };
+    await setDoc(userRef, { practiceStats: { [conceptId]: merged } }, { merge: true });
+  } catch (error) {
+    console.warn('Failed to record practice result in Firestore.', error);
   }
 }
 

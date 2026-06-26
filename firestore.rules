@@ -71,9 +71,36 @@ service cloud.firestore {
         && data.updatedAt.size() <= 40;
     }
 
+    function isValidCachedProblem(data) {
+      return data.conceptId is string
+        && data.conceptId.size() <= 40
+        && data.prompt is string
+        && data.prompt.size() <= 1000
+        && data.acceptedAnswer is string
+        && data.acceptedAnswer.size() <= 64
+        && data.params is map
+        && data.params.size() <= 12
+        && data.source is string
+        && data.source in ['deterministic', 'ai'];
+    }
+
     match /lessons/{lessonId} {
       allow read: if true;
       allow write: if false;
+    }
+
+    // Cache of verified, AI-authored practice problems (Phase 1).
+    //
+    // The answer key in each doc is ALWAYS deterministic (recomputed client-side
+    // by `solveConcept`), and grading never trusts the cache blindly, so a shared
+    // read/write cache among signed-in learners is safe. Writes are validated and
+    // size-capped; `rateLimits/{uid}` (written only by the Cloud Function via the
+    // Admin SDK, which bypasses these rules) stays denied to all clients by the
+    // default-deny fall-through.
+    match /problems/{problemId} {
+      allow read: if request.auth != null;
+      allow create, update: if request.auth != null && isValidCachedProblem(request.resource.data);
+      allow delete: if false;
     }
 
     match /users/{userId} {

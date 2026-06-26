@@ -9,6 +9,7 @@
  *
  *     Introduction → Counting Outcomes → Compound Events
  *       → Conditional Probability → Mutually Exclusive Events
+ *       → Expected Value → Updating Beliefs
  *
  * Every lesson's only prerequisite is the lesson immediately before it, so
  * exactly one lesson is ever "up next". The map draws one continuous path with
@@ -34,9 +35,6 @@ export interface CourseGraphNode {
   /** Vertical lane within the column: 0 = center, <0 = up, >0 = down. */
   lane: number;
 }
-
-/** The very first lesson on the path — used as the brand-new-learner fallback. */
-export const INTRO_LESSON_ID = 'intro-basic-probability';
 
 /**
  * Note: the Conditional Probability lesson ships with the historical lessonId
@@ -74,12 +72,26 @@ export const courseGraph: Record<string, CourseGraphNode> = {
     column: 3,
     lane: -1,
   },
-  // L5 — upper-right end of the slope (highest point).
+  // L5 — high on the slope; the S-curve dips slightly again after this.
   'mutually-exclusive-events': {
     lessonId: 'mutually-exclusive-events',
     prerequisites: ['dependent-events'],
     column: 4,
     lane: -2,
+  },
+  // L6 — a gentle dip in the wave before the final rise.
+  'expected-value': {
+    lessonId: 'expected-value',
+    prerequisites: ['mutually-exclusive-events'],
+    column: 5,
+    lane: -1.4,
+  },
+  // L7 — upper-right end of the slope (highest point).
+  'bayes-updating': {
+    lessonId: 'bayes-updating',
+    prerequisites: ['expected-value'],
+    column: 6,
+    lane: -3,
   },
 };
 
@@ -135,9 +147,4 @@ export function courseGraphEdges(): CourseGraphEdge[] {
     node.prerequisites.forEach((from) => edges.push({ from, to: node.lessonId }));
   });
   return edges;
-}
-
-/** The highest column index used by the graph (the number of "stages" minus one). */
-export function maxColumn(): number {
-  return Object.values(courseGraph).reduce((max, node) => Math.max(max, node.column), 0);
 }

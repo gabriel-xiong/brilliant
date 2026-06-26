@@ -1,9 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
   gradeMultiStage,
+  isOrderCorrect,
+  isSortCorrect,
   isStageCorrect,
   numericAnswersMatch,
   parseNumericValue,
+  serializeOrderAnswer,
+  serializeSortAnswer,
 } from './answerCheck';
 import type { ProblemStep, QuestionStage } from '../models/lesson';
 import { allLessons } from '../models/lesson';
@@ -121,6 +125,48 @@ describe('lesson 2-5 accepted-answer values', () => {
   });
 });
 
+describe('lesson 6-7 accepted-answer values', () => {
+  it('accepts equivalent forms of the new expected-value answers', () => {
+    // Expected value E[X] = 3 and scaled totals are whole numbers.
+    expect(numericAnswersMatch('3', '3')).toBe(true);
+    expect(numericAnswersMatch('3.0', '3')).toBe(true);
+    expect(numericAnswersMatch('60', '60', 1)).toBe(true);
+    // One wedge out of four.
+    expect(numericAnswersMatch('1/4', '1/4')).toBe(true);
+    expect(numericAnswersMatch('0.25', '1/4')).toBe(true);
+    expect(numericAnswersMatch('25%', '1/4')).toBe(true);
+  });
+
+  it('handles the negative net-gain answers', () => {
+    expect(numericAnswersMatch('-1', '-1')).toBe(true);
+    expect(numericAnswersMatch('-10', '-10')).toBe(true);
+    // A positive guess must not pass a negative expected net.
+    expect(numericAnswersMatch('1', '-1')).toBe(false);
+    expect(numericAnswersMatch('10', '-10')).toBe(false);
+  });
+
+  it('accepts equivalent forms of the new Bayes posterior answers', () => {
+    // P(condition | positive) = 90/270 = 1/3 ≈ 33%.
+    expect(numericAnswersMatch('1/3', '90/270')).toBe(true);
+    expect(numericAnswersMatch('33%', '90/270')).toBe(true);
+    expect(numericAnswersMatch('0.33', '90/270')).toBe(true);
+    // Fresh screening: 40/160 = 1/4 = 25%.
+    expect(numericAnswersMatch('1/4', '40/160')).toBe(true);
+    expect(numericAnswersMatch('25%', '40/160')).toBe(true);
+    // Whole-count table reads.
+    expect(numericAnswersMatch('90', '90')).toBe(true);
+    expect(numericAnswersMatch('180', '180')).toBe(true);
+    expect(numericAnswersMatch('270', '270')).toBe(true);
+  });
+
+  it('rejects close-but-wrong answers for the new values', () => {
+    expect(numericAnswersMatch('1/2', '90/270')).toBe(false);
+    expect(numericAnswersMatch('90%', '90/270')).toBe(false);
+    expect(numericAnswersMatch('1/3', '40/160')).toBe(false);
+    expect(numericAnswersMatch('4', '3')).toBe(false);
+  });
+});
+
 describe('multi-stage scoring', () => {
   const stages: QuestionStage[] = [
     {
@@ -181,6 +227,104 @@ describe('multi-stage scoring', () => {
  * every problem (and every stage) in `allLessons`, so new lessons/questions are
  * covered automatically.
  */
+describe('isSortCorrect (drag-into-buckets grading)', () => {
+  const solution = { '2': 'fav', '4': 'fav', '1': 'other', '3': 'other', '5': 'other', '6': 'other' };
+
+  it('accepts a fully correct placement regardless of key order', () => {
+    expect(isSortCorrect(solution, serializeSortAnswer(solution))).toBe(true);
+    // Key insertion order must not matter.
+    const shuffled = { '6': 'other', '2': 'fav', '5': 'other', '4': 'fav', '1': 'other', '3': 'other' };
+    expect(isSortCorrect(solution, serializeSortAnswer(shuffled))).toBe(true);
+  });
+
+  it('rejects a single misplaced item', () => {
+    const wrong = { ...solution, '6': 'fav' };
+    expect(isSortCorrect(solution, serializeSortAnswer(wrong))).toBe(false);
+  });
+
+  it('rejects an incomplete placement (item still in the tray)', () => {
+    const partial = { '2': 'fav', '4': 'fav' };
+    expect(isSortCorrect(solution, serializeSortAnswer(partial))).toBe(false);
+  });
+
+  it('rejects empty or unparseable input', () => {
+    expect(isSortCorrect(solution, '')).toBe(false);
+    expect(isSortCorrect(solution, 'not json')).toBe(false);
+    expect(isSortCorrect(solution, '[]')).toBe(false);
+  });
+});
+
+describe('isOrderCorrect (arrange-in-sequence grading)', () => {
+  const solution = ['impossible', 'one-face', 'heads'];
+
+  it('accepts the exact order', () => {
+    expect(isOrderCorrect(solution, serializeOrderAnswer(solution))).toBe(true);
+  });
+
+  it('rejects a swapped or reversed order', () => {
+    expect(isOrderCorrect(solution, serializeOrderAnswer(['one-face', 'impossible', 'heads']))).toBe(false);
+    expect(isOrderCorrect(solution, serializeOrderAnswer([...solution].reverse()))).toBe(false);
+  });
+
+  it('rejects wrong-length or unparseable input', () => {
+    expect(isOrderCorrect(solution, serializeOrderAnswer(['impossible', 'heads']))).toBe(false);
+    expect(isOrderCorrect(solution, '')).toBe(false);
+    expect(isOrderCorrect(solution, '{}')).toBe(false);
+  });
+});
+
+describe('interactive step content integrity (allLessons)', () => {
+  it('every sort step has buckets and a complete, valid solution', () => {
+    const sortSteps = allLessons.flatMap((lesson) =>
+      lesson.steps
+        .filter((step): step is ProblemStep => step.type === 'problem' && step.format === 'sort')
+        .map((step) => ({ lessonId: lesson.lessonId, step }))
+    );
+    // The conversions add at least one sort step.
+    expect(sortSteps.length).toBeGreaterThan(0);
+    for (const { lessonId, step } of sortSteps) {
+      const label = `${lessonId}/${step.stepId}`;
+      const items = step.sortItems ?? [];
+      const buckets = step.sortBuckets ?? [];
+      const solution = step.sortSolution ?? {};
+      const bucketIds = new Set(buckets.map((bucket) => bucket.id));
+      expect(items.length, `${label} should define items`).toBeGreaterThan(0);
+      expect(buckets.length, `${label} should define at least two buckets`).toBeGreaterThanOrEqual(2);
+      // Every item has exactly one solution entry pointing at a real bucket.
+      expect(Object.keys(solution).length, `${label} solution should cover every item`).toBe(items.length);
+      for (const item of items) {
+        const target = solution[item.id];
+        expect(target, `${label} item "${item.id}" should have a solution bucket`).toBeTruthy();
+        expect(bucketIds.has(target), `${label} item "${item.id}" maps to a known bucket`).toBe(true);
+      }
+      // The canonical solution must grade as correct.
+      expect(isSortCorrect(solution, serializeSortAnswer(solution)), `${label} accepts its own solution`).toBe(true);
+    }
+  });
+
+  it('every order step has items and a solution that is a permutation of them', () => {
+    const orderSteps = allLessons.flatMap((lesson) =>
+      lesson.steps
+        .filter((step): step is ProblemStep => step.type === 'problem' && step.format === 'order')
+        .map((step) => ({ lessonId: lesson.lessonId, step }))
+    );
+    expect(orderSteps.length).toBeGreaterThan(0);
+    for (const { lessonId, step } of orderSteps) {
+      const label = `${lessonId}/${step.stepId}`;
+      const items = step.orderItems ?? [];
+      const solution = step.orderSolution ?? [];
+      expect(items.length, `${label} should define items`).toBeGreaterThan(1);
+      expect(solution.length, `${label} solution should rank every item once`).toBe(items.length);
+      const itemIds = new Set(items.map((item) => item.id));
+      expect(new Set(solution).size, `${label} solution has no duplicate ids`).toBe(solution.length);
+      for (const id of solution) {
+        expect(itemIds.has(id), `${label} solution id "${id}" is a real item`).toBe(true);
+      }
+      expect(isOrderCorrect(solution, serializeOrderAnswer(solution)), `${label} accepts its own solution`).toBe(true);
+    }
+  });
+});
+
 describe('lesson content answer integrity (allLessons)', () => {
   const problems = allLessons.flatMap((lesson) =>
     lesson.steps
@@ -260,22 +404,19 @@ describe('lesson content answer integrity (allLessons)', () => {
       ['counting-outcomes', 'problem-complement-count', 'stage-unsuccessful-count', '5'],
       ['counting-outcomes', 'problem-complement-count', 'stage-complement-probability', '5/6'],
       ['counting-outcomes', 'problem-expected-frequency', null, '60'],
-      // Harder closing question: even sides minus the 6 (complement), scaled to 120 rolls.
-      ['counting-outcomes', 'problem-even-not-six', null, '40'],
+      // (problem-even-not-six is now a drag-to-bucket `sort` step — no acceptedAnswer to lock.)
       // Lesson 3: compound "and" pairs and the area model.
       ['compound-events', 'problem-count-pairs', 'stage-count-pairs', '1'],
       ['compound-events', 'problem-count-pairs', 'stage-pair-probability', '1/12'],
-      ['compound-events', 'problem-tails-over-four', 'stage-count-high-faces', '2'],
-      ['compound-events', 'problem-tails-over-four', 'stage-tails-high-probability', '2/12'],
-      // Lesson 4: conditioning shrinks the group (single-question step: count the cloudy denominator).
-      ['dependent-events', 'problem-condition-on-cloudy', null, '40'],
+      // (problem-tails-over-four is now an `order`-by-likelihood step — no acceptedAnswer to lock.)
+      // Lesson 4: conditioning shrinks the group.
+      // (problem-condition-on-cloudy is now a `sort` of day-types into the conditioning group.)
       // Formula concept folded into the calculation step; the answer now lives in a stage.
       ['dependent-events', 'problem-conditional-formula', 'stage-apply-formula', '20/50'],
       ['dependent-events', 'problem-draw-dependence', 'stage-first-draw', '3/5'],
       ['dependent-events', 'problem-draw-dependence', 'stage-second-draw', '2/4'],
       // Lesson 5: unions, overlap, and inclusion–exclusion.
-      ['mutually-exclusive-events', 'problem-find-overlap', 'stage-overlap-count', '1'],
-      ['mutually-exclusive-events', 'problem-find-overlap', 'stage-union-probability', '4/6'],
+      // (problem-find-overlap is now a four-region `sort` of die faces — no acceptedAnswer to lock.)
       // Slider problem: tune the shared sides until P(A or B) = 2/3 → overlap 2.
       ['mutually-exclusive-events', 'problem-tune-the-overlap', null, '2'],
       // Overlap concept folded into the add step; now a two-part question (count, then probability).
@@ -283,6 +424,19 @@ describe('lesson content answer integrity (allLessons)', () => {
       ['mutually-exclusive-events', 'problem-add-exclusive', 'stage-add-exclusive', '5/6'],
       ['mutually-exclusive-events', 'problem-double-count', 'stage-naive-sum', '8'],
       ['mutually-exclusive-events', 'problem-double-count', 'stage-true-union', '6'],
+      // Lesson 6: expected value of the prize spinner (payoffs 0,2,4,6).
+      ['expected-value', 'problem-compute-expected-value', 'stage-wedge-prob', '1/4'],
+      ['expected-value', 'problem-compute-expected-value', 'stage-expected-value', '3'],
+      // (problem-expected-winnings is now an `order`-by-expected-value step — no acceptedAnswer to lock.)
+      // Fair-game step: net per play (3 − 4) and net over 10 plays.
+      ['expected-value', 'problem-fair-game', 'stage-net-per-play', '-1'],
+      ['expected-value', 'problem-fair-game', 'stage-net-total', '-10'],
+      // Lesson 7: natural-frequency table (100 of 1000 sick, 90% sens, 20% fpr).
+      // (problem-build-counts is now a `sort` labeling the four test/condition groups.)
+      ['bayes-updating', 'problem-find-posterior', 'stage-total-positive', '270'],
+      ['bayes-updating', 'problem-find-posterior', 'stage-posterior', '90/270'],
+      // Fresh screening: 40 true positives out of 160 total positives.
+      ['bayes-updating', 'problem-posterior-fresh', null, '40/160'],
     ];
 
     for (const [lessonId, stepId, stageId, expected] of expectations) {

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Box, Button, Card, CardContent, Chip, MenuItem, Stack, TextField, Typography } from '@mui/material';
+import { visuallyHidden } from '@mui/utils';
 import { FrequencyChart } from './FrequencyChart';
 
 interface DiceRollSimulatorProps {
@@ -143,6 +144,7 @@ export function DiceRollSimulator(_props: DiceRollSimulatorProps) {
           }}
         >
           <Box
+            role="img"
             aria-label="Six-face wheel with spin hands"
             sx={{
               width: { xs: 280, sm: 340 },
@@ -344,6 +346,12 @@ export function DiceRollSimulator(_props: DiceRollSimulatorProps) {
                 ? 'Try 12 first, then increase the number of spins.'
                 : 'If observed is not exactly 16.7%, that is normal — randomness is noisy.'}
             </Typography>
+
+            <Box aria-live="polite" role="status" sx={visuallyHidden}>
+              {results.length > 0 && !isRunning
+                ? `${results.length} spins. Face ${targetFace} landed ${targetCount} time${targetCount === 1 ? '' : 's'}, observed ${observedPercent} percent versus expected ${expectedPercent} percent.`
+                : ''}
+            </Box>
           </Box>
         </Box>
 
