@@ -271,6 +271,15 @@ describe('isOrderCorrect (arrange-in-sequence grading)', () => {
     expect(isOrderCorrect(solution, '')).toBe(false);
     expect(isOrderCorrect(solution, '{}')).toBe(false);
   });
+
+  it('requires the shipped Lesson 1 ordering question to match sequence, not just item presence', () => {
+    const lesson = allLessons.find((entry) => entry.lessonId === 'intro-basic-probability');
+    const step = lesson?.steps.find((entry): entry is ProblemStep => entry.type === 'problem' && entry.stepId === 'problem-coin-probability');
+
+    expect(step?.format).toBe('order');
+    expect(isOrderCorrect(step?.orderSolution ?? [], serializeOrderAnswer(['impossible', 'lightning', 'sunrise', 'weekend']))).toBe(false);
+    expect(isOrderCorrect(step?.orderSolution ?? [], serializeOrderAnswer(['impossible', 'lightning', 'weekend', 'sunrise']))).toBe(true);
+  });
 });
 
 describe('interactive step content integrity (allLessons)', () => {
