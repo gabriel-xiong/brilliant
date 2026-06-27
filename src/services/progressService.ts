@@ -42,6 +42,12 @@ export interface PracticeConceptStat {
   lastLevel: number;
   /** ISO timestamp of the last practiced session. */
   lastPracticed: string;
+  /** ISO timestamp of the last retrieval review; defaults to lastPracticed for legacy stats. */
+  lastReviewed?: string;
+  /** Consecutive correct first attempts since the most recent miss. */
+  successStreak?: number;
+  /** Misses in the latest practice window; used to pull review sooner. */
+  recentMisses?: number;
 }
 
 export interface UserSummary {
@@ -340,6 +346,40 @@ export async function saveMasterySummary(userId: string, progress: LessonProgres
   }
 }
 
+export interface PracticeResultSummary {
+  answered: number;
+  correct: number;
+  levelReached: number;
+}
+
+/**
+ * Merge one session's concept performance into the persisted aggregate. Existing
+ * totals keep working for old users, while the optional review fields become
+ * more precise as learners practice after Phase 3.
+ */
+export function mergePracticeConceptStat(
+  existing: PracticeConceptStat | undefined,
+  result: PracticeResultSummary,
+  practicedAt = new Date().toISOString(),
+): PracticeConceptStat {
+  const answered = Math.max(0, Math.round(result.answered));
+  const correct = Math.max(0, Math.min(answered, Math.round(result.correct)));
+  const misses = answered - correct;
+  const previousRecentMisses = existing?.recentMisses ?? 0;
+  const previousSuccessStreak = existing?.successStreak ?? 0;
+
+  return {
+    answered: (existing?.answered ?? 0) + answered,
+    correct: (existing?.correct ?? 0) + correct,
+    bestLevel: Math.max(existing?.bestLevel ?? 0, result.levelReached),
+    lastLevel: result.levelReached,
+    lastPracticed: practicedAt,
+    lastReviewed: practicedAt,
+    successStreak: misses > 0 ? 0 : previousSuccessStreak + correct,
+    recentMisses: misses > 0 ? Math.min(5, previousRecentMisses + misses) : Math.max(0, previousRecentMisses - correct),
+  };
+}
+
 /**
  * Accumulate a practice/exam result for one concept into the user summary:
  * adds to the answered/correct totals, keeps the highest level ever reached,
@@ -350,7 +390,7 @@ export async function saveMasterySummary(userId: string, progress: LessonProgres
 export async function recordPracticeResult(
   userId: string,
   conceptId: string,
-  result: { answered: number; correct: number; levelReached: number },
+  result: PracticeResultSummary,
 ): Promise<void> {
   if (!db || !userId || result.answered <= 0) return;
   try {
@@ -359,13 +399,7 @@ export async function recordPracticeResult(
     const existing = snapshot.exists()
       ? (snapshot.data() as UserSummary).practiceStats?.[conceptId]
       : undefined;
-    const merged: PracticeConceptStat = {
-      answered: (existing?.answered ?? 0) + result.answered,
-      correct: (existing?.correct ?? 0) + result.correct,
-      bestLevel: Math.max(existing?.bestLevel ?? 0, result.levelReached),
-      lastLevel: result.levelReached,
-      lastPracticed: new Date().toISOString(),
-    };
+    const merged = mergePracticeConceptStat(existing, result);
     await setDoc(userRef, { practiceStats: { [conceptId]: merged } }, { merge: true });
   } catch (error) {
     console.warn('Failed to record practice result in Firestore.', error);

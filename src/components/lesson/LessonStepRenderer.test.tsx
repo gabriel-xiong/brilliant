@@ -24,6 +24,13 @@ const problemStep: ProblemStep = {
   incorrectFeedback: 'Use successful outcomes divided by total possible outcomes.',
 };
 
+const problemWithPretrieval: ProblemStep = {
+  ...problemStep,
+  pretrieval: {
+    prompt: 'Before calculating: what should you count first?',
+  },
+};
+
 describe('LessonStepRenderer', () => {
   it('submits the selected answer from a problem step', async () => {
     const user = userEvent.setup();
@@ -88,9 +95,99 @@ const coinConceptStep: ConceptStep = {
     "For a fair coin the two sides are equally likely: 1 heads side out of 2 → P(heads) = 1/2 = 50%. " +
     "For every 2 times we flip a coin, we'd expect 1 of them to be heads. " +
     'As your flips pile up, the observed share of heads should settle near this theoretical 50%.',
+  pretrieval: {
+    prompt: 'Before you flip: what share of many fair-coin flips do you expect to be heads?',
+  },
 };
 
 describe('LessonStepRenderer concept coin-probability line', () => {
+  it('renders authored pretrieval prompts as prominent mandatory prediction callouts after content', () => {
+    render(
+      <LessonStepRenderer
+        step={coinConceptStep}
+        feedbackState="idle"
+        selectedChoice={null}
+        onSubmitAnswer={vi.fn()}
+        onAdvance={vi.fn()}
+      />
+    );
+
+    const text = document.body.textContent ?? '';
+    expect(text.indexOf('For a fair coin')).toBeLessThan(text.indexOf('Before you flip'));
+    expect(screen.getByText(/make a prediction/i)).toBeInTheDocument();
+    expect(screen.queryByText(/low stakes/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/what share of many fair-coin flips/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/your prediction/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /save prediction/i })).toBeDisabled();
+  });
+
+  it('requires the prediction before revealing a scored problem question', async () => {
+    const user = userEvent.setup();
+
+    render(
+      <LessonStepRenderer
+        step={problemWithPretrieval}
+        feedbackState="idle"
+        selectedChoice={null}
+        onSubmitAnswer={vi.fn()}
+        onAdvance={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText(/before calculating/i)).toBeInTheDocument();
+    expect(screen.queryByText(/about what percentage/i)).not.toBeInTheDocument();
+
+    expect(screen.getByRole('button', { name: /save prediction/i })).toBeDisabled();
+    await user.type(screen.getByLabelText(/your prediction/i), 'Count the successful outcomes first');
+    expect(screen.getByRole('button', { name: /save prediction/i })).toBeEnabled();
+    await user.click(screen.getByRole('button', { name: /save prediction/i }));
+
+    expect(screen.getByText(/prediction saved. now test it./i)).toBeInTheDocument();
+    expect(screen.getByText(/about what percentage/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /check answer/i })).toBeDisabled();
+  });
+
+  it('resets the prediction gate when moving to a different pretrieval step', async () => {
+    const user = userEvent.setup();
+    const nextPretrievalStep: ProblemStep = {
+      ...problemWithPretrieval,
+      stepId: 'problem-second-pretrieval',
+      title: 'Expected count',
+      question: 'About how many heads should appear in 100 fair coin flips?',
+      pretrieval: {
+        prompt: 'Before calculating: what long-run share should you use?',
+      },
+    };
+
+    const { rerender } = render(
+      <LessonStepRenderer
+        step={problemWithPretrieval}
+        feedbackState="idle"
+        selectedChoice={null}
+        onSubmitAnswer={vi.fn()}
+        onAdvance={vi.fn()}
+      />,
+    );
+
+    await user.type(screen.getByLabelText(/your prediction/i), 'Count heads and tails');
+    await user.click(screen.getByRole('button', { name: /save prediction/i }));
+    expect(screen.getByText(/about what percentage/i)).toBeInTheDocument();
+
+    rerender(
+      <LessonStepRenderer
+        step={nextPretrievalStep}
+        feedbackState="idle"
+        selectedChoice={null}
+        onSubmitAnswer={vi.fn()}
+        onAdvance={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByText(/about how many heads/i)).not.toBeInTheDocument();
+    expect(screen.getByLabelText(/your prediction/i)).toHaveValue('');
+    expect(screen.getByRole('button', { name: /save prediction/i })).toBeDisabled();
+  });
+
   it('renders the full authored line (prefix + styled formula + suffix), not a fixed string', () => {
     const { container } = render(
       <LessonStepRenderer
@@ -136,11 +233,16 @@ describe('LessonStepRenderer concept coin-probability line', () => {
       />
     );
 
+    expect(screen.queryByText(/want a different angle/i)).not.toBeInTheDocument();
+    await user.type(screen.getByLabelText(/your prediction/i), 'About 50%');
+    await user.click(screen.getByRole('button', { name: /save prediction/i }));
+
     expect(screen.getByText(/want a different angle/i)).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: /explain this another way/i }));
 
     expect(await screen.findByText(/probability as a share/i)).toBeInTheDocument();
-    const note = await screen.findByRole('note');
+    const note = screen.getAllByRole('note').find((entry) => entry.textContent?.includes('Another way to see it'));
+    expect(note).toBeTruthy();
     expect(note).toHaveTextContent(/another way to see it/i);
     expect(note).toHaveTextContent(/probability as a share/i);
     expect(screen.queryByText('AI')).not.toBeInTheDocument();

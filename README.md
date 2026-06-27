@@ -9,7 +9,7 @@ Brilliant Probability is a Vite + React + TypeScript learning app for building p
 - **Mastery tracking:** learner progress is labeled as `Needs practice`, `Proficient`, or `Mastered`, with progress persisted locally and, when signed in, through Firebase Auth and Firestore.
 - **Interactive, content-driven lessons:** lessons combine short explanations with simulations, direct-manipulation labs, sliders, sort/order tasks, multi-stage questions, and embedded experiments.
 - **Instant hand-written feedback:** lesson questions include authored feedback and explanations designed to guide the concept without simply revealing answers.
-- **Adaptive practice:** learners can choose question count, unlimited mode, adaptive or fixed difficulty, and one or more unlocked concepts. Practice tracks streaks, levels, and session summaries.
+- **Adaptive Phase 3 practice:** learners can choose question count, unlimited mode, adaptive or fixed difficulty, and one or more unlocked concepts. Practice now surfaces due review, concept readiness, interleaving plans, retrieval accuracy, and mastery movement.
 - **Generated practice scenarios:** practice can use AI-authored scenario wording when enabled, while deterministic app logic keeps the answer key authoritative.
 - **AI tutoring support:** optional AI calls power answer-aware hints, worked solutions, remediation tips, lesson recaps, and alternate concept explanations, all with deterministic fallbacks.
 - **Lesson recaps and review:** end-of-lesson recap dialogs summarize the learner's status, can be revisited later, and support AI-assisted re-explanation when configured.
@@ -20,6 +20,17 @@ Brilliant Probability is a Vite + React + TypeScript learning app for building p
 All grading logic is custom-built and deterministic with no AI dependency. The app uses its own concept schemas, solvers, and a tolerant numeric answer checker that accepts equivalent fractions, decimals, and percentages.
 
 AI is used only for prose and scenario variation. The model never supplies the authoritative answer key; generated problems are validated against the deterministic solver, and every AI feature falls back safely when the endpoint is disabled, slow, or unavailable.
+
+## Phase 3 Learning Design
+
+Phase 3 adds a review layer on top of the course instead of changing the main lesson path. It uses short practice signals so learners can see why a session is recommended and what changed afterward.
+
+- **Pretrieval and retrieval:** practice problems ask learners to try the method, count, or rule before computation. Probability depends on choosing the right setup, so an early guess makes the later calculation stick.
+- **Spaced review:** concepts with misses or little practice come back sooner, while accurate concepts return after a delay. That fits probability because small differences between "and", "or", "not", and "given" fade quickly without refreshers.
+- **Interleaving:** mixed sessions rotate selected topics instead of blocking one concept at a time. Probability transfer improves when learners must decide which idea applies before calculating.
+- **Soft mastery:** labels stay diagnostic (`Needs practice`, `Proficient`, `Mastered`) and do not hard-lock the next lesson. The app treats mastery as a signal for review and exam readiness, not a punishment.
+- **Scaffolding fade:** lower practice levels include cues like what to count first; higher levels ask learners to choose the approach with less support. This keeps difficulty desirable without only making the numbers larger.
+- **Immediate feedback:** deterministic grading gives fast correctness checks, with worked solutions and optional AI explanations after the learner answers. That keeps feedback specific while preserving the learner's first-try retrieval signal.
 
 ## Tech Stack
 

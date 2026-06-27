@@ -67,6 +67,21 @@ export interface SolverResult {
   steps: SolutionStep[];
 }
 
+export type RetrievalFocus = 'method' | 'favorable-outcomes' | 'total-outcomes' | 'rule';
+
+export type ScaffoldLevel = 'guided' | 'light' | 'faded';
+
+export interface ScaffoldSupport {
+  /**
+   * Adaptive practice difficulty level that controls how much support is shown.
+   * This is the practice level, not the lesson number.
+   */
+  practiceLevel: number;
+  level: ScaffoldLevel;
+  /** Short cue shown only at guided levels. */
+  cue?: string;
+}
+
 /**
  * A fully-specified, gradable problem. The solver computes the answer; the
  * prompt is deterministically templated. The AI never produces any of these
@@ -84,6 +99,12 @@ export interface GeneratedProblem {
   params: Record<string, number>;
   /** Deterministic, learner-facing question text. */
   prompt: string;
+  /** Low-stakes retrieval question to ask before computation; omitted once support fades. */
+  retrievalPrompt?: string;
+  /** Scaffold metadata derived from adaptive practice difficulty level. */
+  scaffold?: ScaffoldSupport;
+  /** What the retrieval prompt asks the learner to identify first. */
+  retrievalFocus?: RetrievalFocus;
   /** === solution.fraction. */
   acceptedAnswer: string;
   /** === solution.decimal. */

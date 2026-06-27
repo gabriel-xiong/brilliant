@@ -3,13 +3,28 @@ import {
   MAX_LEVEL,
   MIN_LEVEL,
   bandToLevel,
+  buildPracticeSessionSlots,
+  conceptReviewState,
+  conceptPracticeSignal,
   difficultyForStatus,
+  dueReviewConcepts,
   levelForConcept,
   levelToBand,
   nextLevel,
   normalizePracticeConceptSelection,
+  orderPracticeConceptsForSession,
   parseConceptIds,
+  recommendedReviewConcepts,
 } from './practiceService';
+import type { UserSummary } from './progressService';
+
+const baseSummary: UserSummary = {
+  lastActiveDate: '2026-06-27',
+  currentStreak: 0,
+  longestStreak: 0,
+  masterySummary: {},
+  practiceStats: {},
+};
 
 describe('nextLevel — adaptive stepper', () => {
   it('steps up by one on a streak of exactly 2', () => {
@@ -81,9 +96,84 @@ describe('band <-> level seeding', () => {
   });
 });
 
+describe('conceptPracticeSignal — Phase 3 review/readiness signal', () => {
+  const now = new Date('2026-06-27T12:00:00.000Z');
+
+  it('marks an unpracticed completed concept due for first review', () => {
+    const signal = conceptPracticeSignal('single-event', null, now, 'completed');
+
+    expect(signal.label).toBe('Proficient');
+    expect(signal.dueForReview).toBe(true);
+    expect(signal.dueReason).toBe('Ready for first review');
+  });
+
+  it('brings recently missed concepts back immediately', () => {
+    const signal = conceptPracticeSignal(
+      'single-event',
+      {
+        lastActiveDate: '2026-06-27',
+        currentStreak: 1,
+        longestStreak: 1,
+        masterySummary: {},
+        practiceStats: {
+          'single-event': {
+            answered: 5,
+            correct: 3,
+            bestLevel: 4,
+            lastLevel: 4,
+            lastPracticed: '2026-06-27T11:00:00.000Z',
+          },
+        },
+      },
+      now,
+      'completed',
+    );
+
+    expect(signal.dueForReview).toBe(true);
+    expect(signal.dueReason).toBe('Review after recent misses');
+    expect(signal.accuracy).toBeCloseTo(0.6);
+  });
+
+  it('spaces accurate practice into the future', () => {
+    const signal = conceptPracticeSignal(
+      'single-event',
+      {
+        lastActiveDate: '2026-06-27',
+        currentStreak: 1,
+        longestStreak: 1,
+        masterySummary: {},
+        practiceStats: {
+          'single-event': {
+            answered: 12,
+            correct: 11,
+            bestLevel: 8,
+            lastLevel: 8,
+            lastPracticed: '2026-06-27T11:00:00.000Z',
+            recentMisses: 0,
+            successStreak: 3,
+          },
+        },
+      },
+      now,
+      'completed',
+    );
+
+    expect(signal.label).toBe('Mastered');
+    expect(signal.dueForReview).toBe(false);
+    expect(signal.nextReviewAt).toBe('2026-06-30T11:00:00.000Z');
+  });
+});
+
 describe('multi-topic practice selection', () => {
   it('parses valid concept ids while dropping invalid values and duplicates', () => {
     expect(parseConceptIds(['single-event', 'not-a-concept', 'complement', 'single-event', 4])).toEqual([
+      'single-event',
+      'complement',
+    ]);
+  });
+
+  it('parses comma-separated concept ids from a review link', () => {
+    expect(parseConceptIds('single-event,not-a-concept,complement,single-event')).toEqual([
       'single-event',
       'complement',
     ]);
@@ -107,5 +197,225 @@ describe('multi-topic practice selection', () => {
 
   it('falls back to the first unlocked concept if the default is locked', () => {
     expect(normalizePracticeConceptSelection([], ['single-event', 'complement'], 'bayes')).toEqual(['single-event']);
+  });
+});
+
+describe('spaced review state', () => {
+  it('pulls recently missed concepts due sooner than successful concepts', () => {
+    const now = new Date('2026-06-27T12:00:00.000Z');
+    const summary: UserSummary = {
+      ...baseSummary,
+      practiceStats: {
+        'single-event': {
+          answered: 4,
+          correct: 3,
+          bestLevel: 4,
+          lastLevel: 4,
+          lastPracticed: '2026-06-27T05:00:00.000Z',
+          lastReviewed: '2026-06-27T05:00:00.000Z',
+          recentMisses: 1,
+          successStreak: 0,
+        },
+        complement: {
+          answered: 6,
+          correct: 6,
+          bestLevel: 5,
+          lastLevel: 5,
+          lastPracticed: '2026-06-27T05:00:00.000Z',
+          lastReviewed: '2026-06-27T05:00:00.000Z',
+          recentMisses: 0,
+          successStreak: 4,
+        },
+      },
+    };
+
+    const missed = conceptReviewState('single-event', summary, now);
+    const successful = conceptReviewState('complement', summary, now);
+
+    expect(Date.parse(missed.nextDueAt)).toBeLessThan(Date.parse(successful.nextDueAt));
+    expect(missed.reason).toBe('missed-recently');
+    expect(dueReviewConcepts(['single-event', 'complement'], summary, now)).toEqual(['single-event']);
+  });
+
+  it('derives useful review state from legacy aggregate practice stats', () => {
+    const state = conceptReviewState(
+      'single-event',
+      {
+        ...baseSummary,
+        practiceStats: {
+          'single-event': {
+            answered: 10,
+            correct: 7,
+            bestLevel: 4,
+            lastLevel: 4,
+            lastPracticed: '2026-06-27T00:00:00.000Z',
+          },
+        },
+      },
+      new Date('2026-06-27T12:00:00.000Z'),
+    );
+
+    expect(state.recentMisses).toBe(3);
+    expect(state.successStreak).toBe(0);
+    expect(state.isDue).toBe(true);
+  });
+});
+
+describe('review recommendations', () => {
+  it('prefers due review, recent misses, weak evidence, then first practice', () => {
+    const now = new Date('2026-06-27T12:00:00.000Z');
+    const summary: UserSummary = {
+      ...baseSummary,
+      practiceStats: {
+        'single-event': {
+          answered: 6,
+          correct: 6,
+          bestLevel: 5,
+          lastLevel: 5,
+          lastPracticed: '2026-06-25T08:00:00.000Z',
+          lastReviewed: '2026-06-25T08:00:00.000Z',
+          recentMisses: 0,
+          successStreak: 1,
+        },
+        complement: {
+          answered: 5,
+          correct: 4,
+          bestLevel: 4,
+          lastLevel: 4,
+          lastPracticed: '2026-06-27T11:00:00.000Z',
+          lastReviewed: '2026-06-27T11:00:00.000Z',
+          recentMisses: 1,
+          successStreak: 0,
+        },
+        'and-multiply': {
+          answered: 5,
+          correct: 3,
+          bestLevel: 3,
+          lastLevel: 3,
+          lastPracticed: '2026-06-27T11:00:00.000Z',
+          lastReviewed: '2026-06-27T11:00:00.000Z',
+          recentMisses: 0,
+          successStreak: 0,
+        },
+      },
+    };
+
+    const recommendations = recommendedReviewConcepts(
+      ['single-event', 'complement', 'and-multiply', 'conditional'],
+      summary,
+      now,
+      () => 'completed',
+      4,
+    );
+
+    expect(recommendations.map((entry) => entry.conceptId)).toEqual([
+      'single-event',
+      'complement',
+      'and-multiply',
+      'conditional',
+    ]);
+    expect(recommendations.map((entry) => entry.reason)).toEqual([
+      'due',
+      'recent-misses',
+      'low-accuracy',
+      'new',
+    ]);
+  });
+
+  it('suggests unlocked concepts that need first practice', () => {
+    const recommendations = recommendedReviewConcepts(
+      ['single-event', 'complement'],
+      baseSummary,
+      new Date('2026-06-27T12:00:00.000Z'),
+      () => 'completed',
+    );
+
+    expect(recommendations.map((entry) => entry.reason)).toEqual(['new', 'new']);
+    expect(recommendations.every((entry) => entry.detail.includes('first practice'))).toBe(true);
+  });
+});
+
+describe('interleaved practice slots', () => {
+  it('prioritizes due and weak concepts while avoiding adjacent repeats', () => {
+    const now = new Date('2026-06-27T12:00:00.000Z');
+    const summary: UserSummary = {
+      ...baseSummary,
+      practiceStats: {
+        'single-event': {
+          answered: 4,
+          correct: 2,
+          bestLevel: 3,
+          lastLevel: 3,
+          lastPracticed: '2026-06-27T08:00:00.000Z',
+          recentMisses: 2,
+          successStreak: 0,
+        },
+        complement: {
+          answered: 5,
+          correct: 5,
+          bestLevel: 4,
+          lastLevel: 4,
+          lastPracticed: '2026-06-27T08:00:00.000Z',
+          recentMisses: 0,
+          successStreak: 4,
+        },
+        'and-multiply': {
+          answered: 5,
+          correct: 4,
+          bestLevel: 4,
+          lastLevel: 4,
+          lastPracticed: '2026-06-27T08:00:00.000Z',
+          recentMisses: 0,
+          successStreak: 1,
+        },
+      },
+    };
+
+    const slots = buildPracticeSessionSlots(
+      ['single-event', 'complement', 'and-multiply'],
+      summary,
+      50,
+      { questionCount: 6, difficultyMode: 'adaptive' },
+      now,
+    );
+    const conceptOrder = slots.map((slot) => slot.conceptId);
+
+    expect(slots).toHaveLength(6);
+    expect(conceptOrder[0]).toBe('single-event');
+    expect(conceptOrder.some((concept, index) => index > 0 && concept === conceptOrder[index - 1])).toBe(false);
+    expect(conceptOrder.filter((concept) => concept === 'single-event')).toHaveLength(3);
+    expect(slots.map((slot) => slot.seed)).toEqual([50, 51, 52, 53, 54, 55]);
+  });
+
+  it('uses an ordered starter rotation for unlimited sessions', () => {
+    const now = new Date('2026-06-27T12:00:00.000Z');
+    const summary: UserSummary = {
+      ...baseSummary,
+      practiceStats: {
+        complement: {
+          answered: 3,
+          correct: 1,
+          bestLevel: 2,
+          lastLevel: 2,
+          lastPracticed: '2026-06-27T09:00:00.000Z',
+          recentMisses: 2,
+          successStreak: 0,
+        },
+      },
+    };
+
+    expect(orderPracticeConceptsForSession(['single-event', 'complement'], summary, now)[0]).toBe('complement');
+    expect(
+      buildPracticeSessionSlots(
+        ['single-event', 'complement'],
+        summary,
+        1,
+        { questionCount: 'unlimited', difficultyMode: 6 },
+        now,
+      ).map((slot) => [slot.conceptId, slot.level]),
+    ).toEqual([
+      ['complement', 6],
+      ['single-event', 6],
+    ]);
   });
 });

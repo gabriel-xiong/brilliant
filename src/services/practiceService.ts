@@ -6,9 +6,40 @@
  */
 import { ALL_CONCEPTS, conceptsForLessonId } from './ai/conceptSchemas';
 import type { ConceptId, Difficulty, DifficultyBand } from './ai/types';
-import type { MasterySummaryEntry, UserSummary } from './progressService';
+import type { MasterySummaryEntry, PracticeConceptStat, UserSummary } from './progressService';
 
 type MasteryStatus = MasterySummaryEntry['status'];
+export type ConceptReadinessStatus = 'needs-practice' | 'proficient' | 'mastered';
+
+export interface ConceptPracticeSignal {
+  status: ConceptReadinessStatus;
+  label: 'Needs practice' | 'Proficient' | 'Mastered';
+  detail: string;
+  dueForReview: boolean;
+  dueReason: string;
+  answered: number;
+  accuracy: number | null;
+  bestLevel: number | null;
+  lastPracticed: string | null;
+  nextReviewAt: string | null;
+}
+
+export type ReviewRecommendationReason =
+  | 'recent-misses'
+  | 'due'
+  | 'low-accuracy'
+  | 'needs-evidence'
+  | 'new'
+  | 'keep-fresh';
+
+export interface ReviewConceptRecommendation {
+  conceptId: ConceptId;
+  reason: ReviewRecommendationReason;
+  detail: string;
+  dueForReview: boolean;
+  priorityScore: number;
+  signal: ConceptPracticeSignal;
+}
 
 /** The 7 lesson ids, in course order, so we can map a concept back to a lesson. */
 const LESSON_IDS_IN_ORDER = [
@@ -58,6 +89,87 @@ export function difficultyForConcept(
   const lessonId = LESSON_IDS_IN_ORDER.find((id) => conceptsForLessonId(id).includes(conceptId));
   if (!lessonId) return 'intro';
   return difficultyForStatus(summary.masterySummary[lessonId]?.status);
+}
+
+function lessonIdForPracticeConcept(conceptId: ConceptId): string | null {
+  return LESSON_IDS_IN_ORDER.find((id) => conceptsForLessonId(id).includes(conceptId)) ?? null;
+}
+
+function statusFromPractice(
+  masteryStatus: string | null | undefined,
+  answered: number,
+  accuracy: number | null,
+  bestLevel: number,
+): ConceptReadinessStatus {
+  if (masteryStatus === 'mastered' || (answered >= 5 && (accuracy ?? 0) >= 0.9 && bestLevel >= 8)) {
+    return 'mastered';
+  }
+  if (
+    masteryStatus === 'proficient' ||
+    masteryStatus === 'completed' ||
+    (answered >= 3 && (accuracy ?? 0) >= 0.75)
+  ) {
+    return 'proficient';
+  }
+  return 'needs-practice';
+}
+
+/**
+ * Compact Phase 3 signal for practice UI. It combines lesson mastery with
+ * rolling concept practice stats, then applies a simple spaced-review cadence:
+ * missed/low-sample concepts are due now, accurate concepts come back later.
+ */
+export function conceptPracticeSignal(
+  conceptId: ConceptId,
+  summary: UserSummary | null | undefined,
+  now = new Date(),
+  masteryStatusOverride?: string | null,
+): ConceptPracticeSignal {
+  const reviewState = conceptReviewState(conceptId, summary, now);
+  const stat = summary?.practiceStats?.[conceptId];
+  const answered = reviewState.answered;
+  const accuracy = reviewState.accuracy;
+  const bestLevel = stat?.bestLevel ?? 0;
+  const lessonId = lessonIdForPracticeConcept(conceptId);
+  const masteryStatus =
+    masteryStatusOverride ?? (lessonId ? summary?.masterySummary?.[lessonId]?.status : undefined);
+  const status = statusFromPractice(masteryStatus, answered, accuracy, bestLevel);
+  const lastPracticed = reviewState.lastPracticed ?? null;
+  const dueForReview = reviewState.isDue || reviewState.recentMisses > 0;
+  const label =
+    status === 'mastered' ? 'Mastered' : status === 'proficient' ? 'Proficient' : 'Needs practice';
+  const nextReviewAt = dueForReview ? null : reviewState.nextDueAt;
+
+  let detail = 'Try a few recall-first problems to build the signal.';
+  if (status === 'mastered') {
+    detail = 'Strong accuracy at harder levels. Keep it fresh with spaced review.';
+  } else if (status === 'proficient') {
+    detail = 'Ready for mixed practice. A short review keeps it from fading.';
+  } else if (answered > 0 && accuracy != null) {
+    detail = `${Math.round(accuracy * 100)}% recent practice accuracy. Review this soon.`;
+  }
+
+  let dueReason = 'Ready for first review';
+  if (reviewState.reason === 'missed-recently' || reviewState.recentMisses > 0) {
+    dueReason = 'Review after recent misses';
+  } else if (lastPracticed && dueForReview) {
+    dueReason = 'Spaced review is due';
+  } else if (nextReviewAt) {
+    dueReason = 'Review later';
+  }
+
+  return {
+    status,
+    label,
+    detail,
+    dueForReview,
+    dueReason,
+    answered,
+    accuracy,
+    bestLevel: bestLevel > 0 ? bestLevel : null,
+    lastPracticed,
+    nextReviewAt,
+  };
 }
 
 /**
@@ -194,10 +306,15 @@ export function parseConceptId(raw: string | null | undefined): ConceptId | null
 
 /** Return only valid ConceptIds from untrusted input, keeping order and removing duplicates. */
 export function parseConceptIds(raw: unknown): ConceptId[] {
-  if (!Array.isArray(raw)) return [];
+  const values =
+    typeof raw === 'string'
+      ? raw.split(',')
+      : Array.isArray(raw)
+        ? raw.flatMap((value) => (typeof value === 'string' ? value.split(',') : [value]))
+        : [];
   const seen = new Set<ConceptId>();
   const concepts: ConceptId[] = [];
-  raw.forEach((value) => {
+  values.forEach((value) => {
     const concept = typeof value === 'string' ? parseConceptId(value) : null;
     if (concept && !seen.has(concept)) {
       seen.add(concept);
@@ -295,6 +412,303 @@ export const DEFAULT_PRACTICE_CONFIG: PracticeConfig = {
   questionCount: 'unlimited',
   difficultyMode: 'adaptive',
 };
+
+const HOUR_MS = 60 * 60 * 1000;
+const DAY_MS = 24 * HOUR_MS;
+
+export type ReviewReason = 'new' | 'missed-recently' | 'due' | 'weak' | 'steady';
+
+export interface ConceptReviewState {
+  conceptId: ConceptId;
+  answered: number;
+  correct: number;
+  accuracy: number | null;
+  lastPracticed?: string;
+  lastReviewed?: string;
+  recentMisses: number;
+  successStreak: number;
+  nextDueAt: string;
+  isDue: boolean;
+  priorityScore: number;
+  reason: ReviewReason;
+}
+
+export interface PracticeSlot {
+  conceptId: ConceptId;
+  level: number;
+  seed: number;
+  reviewState: ConceptReviewState;
+}
+
+function timeMs(iso: string | undefined): number | null {
+  if (!iso) return null;
+  const ms = Date.parse(iso);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+function boundedAccuracy(stat: PracticeConceptStat | undefined): number | null {
+  if (!stat || stat.answered <= 0) return null;
+  return Math.max(0, Math.min(1, stat.correct / stat.answered));
+}
+
+function estimatedRecentMisses(stat: PracticeConceptStat | undefined): number {
+  if (!stat || stat.answered <= 0) return 0;
+  if (Number.isFinite(stat.recentMisses)) return Math.max(0, Math.round(stat.recentMisses ?? 0));
+  return Math.min(5, Math.max(0, stat.answered - stat.correct));
+}
+
+function estimatedSuccessStreak(stat: PracticeConceptStat | undefined, accuracy: number | null): number {
+  if (!stat || stat.answered <= 0) return 0;
+  if (Number.isFinite(stat.successStreak)) return Math.max(0, Math.round(stat.successStreak ?? 0));
+  if (accuracy === null) return 0;
+  if (accuracy >= 0.9) return Math.min(3, stat.correct);
+  if (accuracy >= 0.75) return 1;
+  return 0;
+}
+
+export function reviewDelayMs(recentMisses: number, successStreak: number): number {
+  const misses = Math.max(0, Math.round(recentMisses));
+  const streak = Math.max(0, Math.round(successStreak));
+  if (misses >= 3) return 2 * HOUR_MS;
+  if (misses === 2) return 6 * HOUR_MS;
+  if (misses === 1) return 12 * HOUR_MS;
+  if (streak >= 6) return 14 * DAY_MS;
+  if (streak >= 4) return 7 * DAY_MS;
+  if (streak >= 2) return 3 * DAY_MS;
+  if (streak >= 1) return DAY_MS;
+  return 12 * HOUR_MS;
+}
+
+export function conceptReviewState(
+  conceptId: ConceptId,
+  summary: UserSummary | null | undefined,
+  now = new Date(),
+): ConceptReviewState {
+  const stat = summary?.practiceStats?.[conceptId];
+  const answered = Math.max(0, stat?.answered ?? 0);
+  const correct = Math.max(0, stat?.correct ?? 0);
+  const accuracy = boundedAccuracy(stat);
+  const recentMisses = estimatedRecentMisses(stat);
+  const successStreak = estimatedSuccessStreak(stat, accuracy);
+  const lastReviewed = stat?.lastReviewed ?? stat?.lastPracticed;
+  const anchorMs = timeMs(lastReviewed);
+  const nowMs = now.getTime();
+  const nextDueMs = anchorMs === null ? nowMs : anchorMs + reviewDelayMs(recentMisses, successStreak);
+  const isDue = nextDueMs <= nowMs;
+  const weakness = accuracy === null ? 0.5 : 1 - accuracy;
+  const ageDays = anchorMs === null ? 7 : Math.max(0, (nowMs - anchorMs) / DAY_MS);
+  const priorityScore =
+    (isDue ? (answered === 0 ? 80 : 1000) : 0) +
+    recentMisses * 140 +
+    weakness * 220 +
+    Math.min(ageDays, 14) * 8 -
+    Math.min(successStreak, 8) * 18;
+  const reason: ReviewReason =
+    answered === 0
+      ? 'new'
+      : recentMisses > 0
+        ? 'missed-recently'
+        : isDue
+          ? 'due'
+          : accuracy !== null && accuracy < 0.8
+            ? 'weak'
+            : 'steady';
+
+  return {
+    conceptId,
+    answered,
+    correct,
+    accuracy,
+    lastPracticed: stat?.lastPracticed,
+    lastReviewed,
+    recentMisses,
+    successStreak,
+    nextDueAt: new Date(nextDueMs).toISOString(),
+    isDue,
+    priorityScore,
+    reason,
+  };
+}
+
+export function reviewStatesForConcepts(
+  concepts: readonly ConceptId[],
+  summary: UserSummary | null | undefined,
+  now = new Date(),
+): ConceptReviewState[] {
+  return concepts.map((conceptId) => conceptReviewState(conceptId, summary, now));
+}
+
+export function dueReviewConcepts(
+  concepts: readonly ConceptId[],
+  summary: UserSummary | null | undefined,
+  now = new Date(),
+): ConceptId[] {
+  return reviewStatesForConcepts(concepts, summary, now)
+    .filter((state) => state.isDue || state.recentMisses > 0)
+    .sort((a, b) => b.priorityScore - a.priorityScore)
+    .map((state) => state.conceptId);
+}
+
+function recommendationRank(reason: ReviewRecommendationReason): number {
+  switch (reason) {
+    case 'recent-misses':
+    case 'due':
+      return 0;
+    case 'low-accuracy':
+    case 'needs-evidence':
+      return 1;
+    case 'new':
+      return 2;
+    case 'keep-fresh':
+      return 3;
+  }
+}
+
+function recommendationForState(
+  state: ConceptReviewState,
+  signal: ConceptPracticeSignal,
+): ReviewConceptRecommendation {
+  if (state.recentMisses > 0) {
+    return {
+      conceptId: state.conceptId,
+      reason: 'recent-misses',
+      detail: 'Recommended because recent misses make this worth reviewing now.',
+      dueForReview: true,
+      priorityScore: state.priorityScore,
+      signal,
+    };
+  }
+  if (state.isDue && state.answered > 0) {
+    return {
+      conceptId: state.conceptId,
+      reason: 'due',
+      detail: 'Recommended because spaced review is due.',
+      dueForReview: true,
+      priorityScore: state.priorityScore,
+      signal,
+    };
+  }
+  if (state.accuracy !== null && state.accuracy < 0.8) {
+    return {
+      conceptId: state.conceptId,
+      reason: 'low-accuracy',
+      detail: 'Recommended because recent accuracy is below the mastery goal.',
+      dueForReview: false,
+      priorityScore: state.priorityScore,
+      signal,
+    };
+  }
+  if (state.answered > 0 && state.answered < 3) {
+    return {
+      conceptId: state.conceptId,
+      reason: 'needs-evidence',
+      detail: 'Recommended because a few more questions will give a clearer signal.',
+      dueForReview: false,
+      priorityScore: state.priorityScore,
+      signal,
+    };
+  }
+  if (state.answered === 0) {
+    return {
+      conceptId: state.conceptId,
+      reason: 'new',
+      detail: 'Recommended because this unlocked topic needs first practice.',
+      dueForReview: false,
+      priorityScore: state.priorityScore,
+      signal,
+    };
+  }
+  return {
+    conceptId: state.conceptId,
+    reason: 'keep-fresh',
+    detail: 'Recommended to keep this skill fresh.',
+    dueForReview: false,
+    priorityScore: state.priorityScore,
+    signal,
+  };
+}
+
+export function recommendedReviewConcepts(
+  concepts: readonly ConceptId[],
+  summary: UserSummary | null | undefined,
+  now = new Date(),
+  masteryStatusForConcept: (conceptId: ConceptId) => string | null | undefined = () => undefined,
+  maxCount = 3,
+): ReviewConceptRecommendation[] {
+  return reviewStatesForConcepts(concepts, summary, now)
+    .map((state) =>
+      recommendationForState(
+        state,
+        conceptPracticeSignal(state.conceptId, summary, now, masteryStatusForConcept(state.conceptId)),
+      ),
+    )
+    .sort((a, b) => {
+      const rankDiff = recommendationRank(a.reason) - recommendationRank(b.reason);
+      if (rankDiff !== 0) return rankDiff;
+      return b.priorityScore - a.priorityScore;
+    })
+    .slice(0, Math.max(1, Math.round(maxCount)));
+}
+
+export function orderPracticeConceptsForSession(
+  concepts: readonly ConceptId[],
+  summary: UserSummary | null | undefined,
+  now = new Date(),
+): ConceptId[] {
+  return reviewStatesForConcepts(concepts, summary, now)
+    .sort((a, b) => b.priorityScore - a.priorityScore)
+    .map((state) => state.conceptId);
+}
+
+function slotWeight(state: ConceptReviewState): number {
+  if (state.answered === 0) return 1;
+  if (state.recentMisses > 0 || state.isDue) return 3;
+  if (state.accuracy !== null && state.accuracy < 0.8) return 2;
+  return 1;
+}
+
+export function buildPracticeSessionSlots(
+  concepts: readonly ConceptId[],
+  summary: UserSummary | null | undefined,
+  baseSeed = 1,
+  config: PracticeConfig = DEFAULT_PRACTICE_CONFIG,
+  now = new Date(),
+): PracticeSlot[] {
+  const states = reviewStatesForConcepts(concepts, summary, now).sort((a, b) => b.priorityScore - a.priorityScore);
+  if (states.length === 0) return [];
+
+  const targetCount =
+    config.questionCount === 'unlimited'
+      ? states.length
+      : Math.max(1, Math.round(config.questionCount));
+  const used = new Map<ConceptId, number>();
+  const slots: PracticeSlot[] = [];
+
+  for (let index = 0; index < targetCount; index += 1) {
+    const previous = slots[index - 1]?.conceptId;
+    const pick =
+      states
+        .filter((state) => states.length === 1 || state.conceptId !== previous)
+        .sort((a, b) => {
+          const aUse = used.get(a.conceptId) ?? 0;
+          const bUse = used.get(b.conceptId) ?? 0;
+          const aRatio = aUse / slotWeight(a);
+          const bRatio = bUse / slotWeight(b);
+          if (aRatio !== bRatio) return aRatio - bRatio;
+          return b.priorityScore - a.priorityScore;
+        })[0] ?? states[0];
+
+    used.set(pick.conceptId, (used.get(pick.conceptId) ?? 0) + 1);
+    slots.push({
+      conceptId: pick.conceptId,
+      level: startLevelForMode(config.difficultyMode, pick.conceptId, summary),
+      seed: baseSeed + index,
+      reviewState: pick,
+    });
+  }
+
+  return slots;
+}
 
 /** A configured exam: a finite length + a difficulty mode (no 'unlimited'). */
 export interface ExamConfig {

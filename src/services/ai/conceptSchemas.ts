@@ -24,6 +24,8 @@ import type {
   ConceptId,
   Difficulty,
   GeneratedProblem,
+  RetrievalFocus,
+  ScaffoldSupport,
   SolutionStep,
   SolverResult,
 } from './types';
@@ -329,6 +331,91 @@ function chooseTemplate<T>(
   return choices[variantIndex(seed, level, choices.length)];
 }
 
+function scaffoldLevelForPractice(level: number): ScaffoldSupport['level'] {
+  if (level <= 2) return 'guided';
+  if (level <= 5) return 'light';
+  return 'faded';
+}
+
+const RETRIEVAL_SUPPORT: Record<
+  ConceptId,
+  {
+    focus: RetrievalFocus;
+    guided: string;
+    light: string;
+    cue: string;
+  }
+> = {
+  'single-event': {
+    focus: 'favorable-outcomes',
+    guided: 'identify the favorable outcomes and count the total outcomes',
+    light: 'choose what counts as favorable before calculating',
+    cue: 'Use favorable outcomes over total equally likely outcomes.',
+  },
+  complement: {
+    focus: 'rule',
+    guided: 'identify the event you can count, then plan to subtract it from 1',
+    light: 'choose whether to count directly or use the complement rule',
+    cue: 'Find P(event) first, then use 1 - P(event).',
+  },
+  'and-multiply': {
+    focus: 'rule',
+    guided: 'identify the two independent events that both need to happen',
+    light: 'choose whether the setup needs AND, OR, or a direct count',
+    cue: 'When both independent events must happen, multiply their probabilities.',
+  },
+  'or-inclusion-exclusion': {
+    focus: 'rule',
+    guided: 'identify what belongs in A, B, and the overlap',
+    light: 'choose whether simple adding is safe or the overlap must be corrected',
+    cue: 'For OR, add A and B, then subtract the overlap once.',
+  },
+  conditional: {
+    focus: 'total-outcomes',
+    guided: 'identify the group named by the condition and use that as the total',
+    light: 'choose the denominator from the information given before calculating',
+    cue: 'The condition becomes the denominator.',
+  },
+  'expected-value': {
+    focus: 'method',
+    guided: 'identify each payoff and the probability that weights it',
+    light: 'choose the long-run average method before calculating',
+    cue: 'Expected value is each payoff times its probability, then added.',
+  },
+  bayes: {
+    focus: 'method',
+    guided: 'identify the true positives and false positives in the evidence group',
+    light: 'choose the evidence group first, then update the probability',
+    cue: 'Compare true positives with everyone who produced the evidence.',
+  },
+};
+
+function scaffoldForConcept(conceptId: ConceptId, level: number): ScaffoldSupport {
+  const support = RETRIEVAL_SUPPORT[conceptId];
+  const scaffoldLevel = scaffoldLevelForPractice(level);
+  return {
+    practiceLevel: level,
+    level: scaffoldLevel,
+    cue: scaffoldLevel === 'guided' ? support.cue : undefined,
+  };
+}
+
+function retrievalPromptForConcept(conceptId: ConceptId, level: number): string | undefined {
+  const support = RETRIEVAL_SUPPORT[conceptId];
+  const scaffoldLevel = scaffoldLevelForPractice(level);
+  if (scaffoldLevel === 'faded') {
+    return undefined;
+  }
+  if (scaffoldLevel === 'light') {
+    return `Before solving, ${support.light}.`;
+  }
+  return `Before solving, ${support.guided}.`;
+}
+
+function scaffoldedPrompt(_conceptId: ConceptId, _level: number, prompt: string): string {
+  return prompt;
+}
+
 /** Cover stories for single-event so practice is not always the same spinner. */
 const SINGLE_EVENT_SCENARIOS: Record<PromptTier, Array<(favorable: number, total: number) => string>> = {
   simple: [
@@ -621,14 +708,19 @@ export function generateProblem(
       prompt = 'Solve for the probability.';
   }
 
+  prompt = scaffoldedPrompt(conceptId, level, prompt);
+  const scaffold = scaffoldForConcept(conceptId, level);
+  const retrievalPrompt = retrievalPromptForConcept(conceptId, level);
   const solution = solveConcept(conceptId, params);
-  return {
+  const problem: GeneratedProblem = {
     id,
     conceptId,
     difficulty: band,
     level,
     params,
     prompt,
+    retrievalFocus: RETRIEVAL_SUPPORT[conceptId].focus,
+    scaffold,
     acceptedAnswer: solution.fraction,
     acceptedDecimal: solution.decimal,
     tolerance,
@@ -637,6 +729,10 @@ export function generateProblem(
     solution,
     source: 'deterministic',
   };
+  if (retrievalPrompt) {
+    problem.retrievalPrompt = retrievalPrompt;
+  }
+  return problem;
 }
 
 // ---------------------------------------------------------------------------

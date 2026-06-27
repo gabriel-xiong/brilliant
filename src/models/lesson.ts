@@ -50,9 +50,15 @@ export interface BaseStep {
   title: string;
 }
 
+export interface PretrievalMoment {
+  /** A low-stakes prediction or first attempt shown before the explanation/demo resolves it. */
+  prompt: string;
+}
+
 export interface ConceptStep extends BaseStep {
   type: 'concept';
   body: string;
+  pretrieval?: PretrievalMoment;
   illustration?: string;
   /** Optional inline figure rendered alongside the concept body. */
   figure?: 'venn-or';
@@ -163,6 +169,8 @@ export interface ExplorePhase {
 
 export interface ProblemStep extends BaseStep {
   type: 'problem';
+  /** Optional low-stakes prediction before the scored question or reveal. */
+  pretrieval?: PretrievalMoment;
   /** Question format; omitting it means `multiple-choice` for backward compatibility. */
   format?: ProblemFormat;
   question: string;
@@ -244,7 +252,7 @@ export interface Lesson {
 export const introBasicProbabilityLesson: Lesson = {
   lessonId: 'intro-basic-probability',
   order: 1,
-  contentVersion: 26,
+  contentVersion: 27,
   title: 'What is probability?',
   summary: 'Build an intuition for chance by flipping, spinning, and testing your own predictions hands-on.',
   tags: ['basic-probability', 'coins', 'dice'],
@@ -258,6 +266,9 @@ export const introBasicProbabilityLesson: Lesson = {
       stepId: 'concept-what-is-probability',
       type: 'concept',
       title: 'What is probability?',
+      pretrieval: {
+        prompt: 'Before you flip: what share of many fair-coin flips do you expect to be heads?',
+      },
       body: 'Probability is how often we expect an event to happen — 0% if impossible, 100% if certain, and usually somewhere between. Flip the coin a few times and watch the running share of heads: that observed value wobbles at first, then settles toward the true chance as flips pile up.',
       bodyAfterDemo: 'You can also predict it before flipping, by counting equally likely outcomes:\n\nP(event) = successful outcomes / total possible outcomes\n\nA fair coin has 2 equal sides, so P(heads) = 1/2 = 50%.',
       demo: {
@@ -295,6 +306,9 @@ export const introBasicProbabilityLesson: Lesson = {
       type: 'problem',
       format: 'multi-stage',
       title: 'From two choices to six',
+      pretrieval: {
+        prompt: 'Before the formula: if one wheel face is the target, what should you count first?',
+      },
       explore: {
         body: 'The coin had 2 equally likely outcomes; this wheel has 6 equal slices (1–6). So landing on any one face is rarer than heads — one slice in six, not one side in two. Spin it, then continue.',
         continueLabel: 'Continue to the question',
@@ -363,7 +377,7 @@ export const introBasicProbabilityLesson: Lesson = {
 export const countingOutcomesLesson: Lesson = {
   lessonId: 'counting-outcomes',
   order: 2,
-  contentVersion: 24,
+  contentVersion: 25,
   title: 'Counting Outcomes',
   summary: 'Learn how to count what can happen before you calculate probability.',
   tags: ['basic-probability', 'counting', 'outcomes'],
@@ -378,6 +392,9 @@ export const countingOutcomesLesson: Lesson = {
       type: 'problem',
       format: 'multi-stage',
       title: 'Count before you calculate',
+      pretrieval: {
+        prompt: 'Before the lab highlights anything: which sides do you think count for "5 or 6"?',
+      },
       explore: {
         body: 'Counting outcomes just means deciding which sides belong to the event — the total stays 6, only the successful count changes. An event is what you are watching for: "roll a 6" and "roll 5 or 6" are different events. Set the lab to "5 or 6" and watch which sides light up.',
         continueLabel: 'Continue to the question',
@@ -444,6 +461,9 @@ export const countingOutcomesLesson: Lesson = {
       type: 'problem',
       format: 'multi-stage',
       title: 'Events have opposites',
+      pretrieval: {
+        prompt: 'Before using the rule: is "not 6" easier to count directly or by subtracting the 6?',
+      },
       explore: {
         body: 'Every event E has an opposite, written "not E" — its complement. A roll satisfies E or "not E" but never both, so their probabilities always add to 1: P(not E) = 1 − P(E).',
         continueLabel: 'Continue to the question',
@@ -542,7 +562,7 @@ export const countingOutcomesLesson: Lesson = {
 export const compoundEventsLesson: Lesson = {
   lessonId: 'compound-events',
   order: 3,
-  contentVersion: 17,
+  contentVersion: 18,
   title: 'Compound Events',
   summary: 'See how two-step events work, then separate "and" from "or".',
   tags: ['compound-events', 'and-or', 'two-step'],
@@ -557,6 +577,9 @@ export const compoundEventsLesson: Lesson = {
       type: 'problem',
       format: 'multi-stage',
       title: 'When two things happen',
+      pretrieval: {
+        prompt: 'Before the grid: does "heads and 6" need one thing to happen, or both?',
+      },
       explore: {
         body: 'A compound event combines two or more simple events into a single outcome you care about. "Flip heads and roll a 6" needs both pieces to happen, so it is stricter than either alone. A coin (2 results) and a die (6 faces) make 2 × 6 = 12 equally likely pairs (H1 through T6); the event "heads and 6" highlights the pairs that win.',
         continueLabel: 'Continue to the question',
@@ -650,7 +673,7 @@ export const compoundEventsLesson: Lesson = {
 export const dependentEventsLesson: Lesson = {
   lessonId: 'dependent-events',
   order: 4,
-  contentVersion: 20,
+  contentVersion: 21,
   title: 'Conditional Probability',
   summary: 'Learn how new information changes which group you should count.',
   tags: ['conditional', 'given', 'evidence'],
@@ -704,6 +727,9 @@ export const dependentEventsLesson: Lesson = {
       demoFirst: true,
       title: 'Use the conditional formula',
       description: 'Capture conditioning as a formula, then apply it to a fresh set of days.',
+      pretrieval: {
+        prompt: 'Before the formula: if you know it is cloudy, should all days stay in the denominator?',
+      },
       explore: {
         body: 'The bar means "given": P(A | B) is the chance of A once you know B. Conditioning makes B the new denominator:\n\nP(A | B) = P(A and B) / P(B)',
         continueLabel: 'Continue to the question',
@@ -803,7 +829,7 @@ export const dependentEventsLesson: Lesson = {
 export const strategyFairnessLesson: Lesson = {
   lessonId: 'mutually-exclusive-events',
   order: 5,
-  contentVersion: 17,
+  contentVersion: 18,
   title: 'Mutually Exclusive Events',
   summary: 'Learn when two events cannot happen together, and when adding probabilities double-counts.',
   tags: ['mutually-exclusive', 'or', 'overlap'],
@@ -820,6 +846,9 @@ export const strategyFairnessLesson: Lesson = {
       type: 'problem',
       format: 'multi-stage',
       title: 'Can both labels fit?',
+      pretrieval: {
+        prompt: 'Before counting: can one die side be even and greater than 4 at the same time?',
+      },
       explore: {
         body: 'Some events cannot happen at the same time. On one die roll, the result cannot be odd and even at once — those events are mutually exclusive, because they share no outcomes (the overlap is 0).\n\nBut a result can be even and greater than 4, because 6 fits both labels. When two events share a side, that side belongs to both — and adding the events without thinking counts the shared side twice.\n\nSet the lab to "Even vs greater than 4" before you continue.',
         continueLabel: 'Continue to the question',
@@ -1000,7 +1029,7 @@ export const strategyFairnessLesson: Lesson = {
 export const expectedValueLesson: Lesson = {
   lessonId: 'expected-value',
   order: 6,
-  contentVersion: 4,
+  contentVersion: 5,
   title: 'Expected Value',
   summary: 'Find the long-run average payoff of a chance game, and learn what makes a game fair.',
   tags: ['expected-value', 'average', 'fairness'],
@@ -1015,6 +1044,9 @@ export const expectedValueLesson: Lesson = {
       type: 'concept',
       title: 'The long-run average payoff',
       demoFirst: true,
+      pretrieval: {
+        prompt: 'Before many spins: what average payoff do you think this spinner will settle near?',
+      },
       body: 'Now each outcome carries a payoff: the spinner above has four equal wedges, and landing on one pays you that many points. Spin once and you cannot predict the result.',
       bodyAfterDemo: 'But run many spins and the running average payoff settles toward one fixed number, no matter how the early spins wobble. That number is the expected value, E[X] — the average payoff per spin over the long run.',
       demo: {
@@ -1166,7 +1198,7 @@ export const expectedValueLesson: Lesson = {
 export const bayesUpdatingLesson: Lesson = {
   lessonId: 'bayes-updating',
   order: 7,
-  contentVersion: 4,
+  contentVersion: 5,
   title: 'Updating Beliefs',
   summary: 'Use counts out of a population to update a belief after a test result — and see why a positive test can still mean low odds.',
   tags: ['bayes', 'conditional', 'evidence'],
@@ -1181,6 +1213,9 @@ export const bayesUpdatingLesson: Lesson = {
       type: 'concept',
       title: 'Evidence changes the count',
       demoFirst: true,
+      pretrieval: {
+        prompt: 'Before moving the sliders: among positive tests, which two groups should be counted?',
+      },
       body: 'Conditional probability showed that new information changes which group you count. Updating a belief is the same, but now the information is evidence — like a test result.',
       bodyAfterDemo: 'Counting real people is easier than juggling percentages. Drag the sliders above and watch the outlined "tests positive" group: of everyone who tests positive, what share are the true positives?',
       demo: {

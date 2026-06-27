@@ -7,6 +7,7 @@ import {
   solveConcept,
 } from './conceptSchemas';
 import type { Difficulty } from './types';
+import { allLessons } from '../../models/lesson';
 
 describe('solveConcept — exact hand-checked cases', () => {
   it('single-event: 2 of 6 -> 1/3', () => {
@@ -209,6 +210,74 @@ describe('generateProblem — determinism and round-trip integrity', () => {
       expect(solveConcept(conceptId, high.params).fraction).toBe(high.acceptedAnswer);
     }
   });
+
+  it('adds retrieval-first metadata while keeping deterministic answer keys', () => {
+    for (const conceptId of ALL_CONCEPTS) {
+      const problem = generateProblem(conceptId, 3, 21);
+
+      expect(problem.retrievalPrompt).toMatch(/Before solving/);
+      expect(problem.retrievalFocus).toBeTruthy();
+      expect(problem.scaffold?.practiceLevel).toBe(3);
+      expect(problem.scaffold?.level).toBe('light');
+      expect(problem.acceptedAnswer).toBe(solveConcept(conceptId, problem.params).fraction);
+    }
+  });
+
+  it('includes scaffold cues only at guided practice levels', () => {
+    const low = generateProblem('single-event', 1, 5);
+    const high = generateProblem('single-event', 8, 5);
+
+    expect(low.scaffold).toMatchObject({
+      practiceLevel: 1,
+      level: 'guided',
+      cue: expect.stringMatching(/favorable outcomes over total/i),
+    });
+    expect(low.prompt).not.toMatch(/Cue:/);
+    expect(low.prompt).not.toMatch(/Before solving/i);
+    expect(low.retrievalPrompt).toMatch(/identify the favorable outcomes/i);
+    expect(low.retrievalPrompt).toMatch(/count the total outcomes/i);
+
+    expect(high.scaffold).toMatchObject({
+      practiceLevel: 8,
+      level: 'faded',
+    });
+    expect(high.scaffold?.cue).toBeUndefined();
+    expect(high.prompt).not.toMatch(/Choose the approach first/i);
+    expect(high.prompt).not.toMatch(/Cue:/);
+    expect(high.retrievalPrompt).toBeUndefined();
+    expect(high.acceptedAnswer).toBe(solveConcept('single-event', high.params).fraction);
+  });
+
+  it('fades retrieval prompts from concrete planning to method choice to none', () => {
+    const expectedSignals = {
+      'single-event': /choose what counts as favorable/i,
+      complement: /count directly or use the complement rule/i,
+      'and-multiply': /AND, OR, or a direct count/i,
+      'or-inclusion-exclusion': /overlap must be corrected/i,
+      conditional: /choose the denominator/i,
+      'expected-value': /long-run average method/i,
+      bayes: /choose the evidence group/i,
+    } as const;
+
+    for (const conceptId of ALL_CONCEPTS) {
+      const low = generateProblem(conceptId, 1, 13);
+      const mid = generateProblem(conceptId, 4, 13);
+      const high = generateProblem(conceptId, 9, 13);
+
+      expect(low.scaffold?.level).toBe('guided');
+      expect(low.retrievalPrompt).toMatch(/Before solving/i);
+      expect(low.retrievalPrompt).not.toBe(mid.retrievalPrompt);
+
+      expect(mid.scaffold?.level).toBe('light');
+      expect(mid.retrievalPrompt).toMatch(expectedSignals[conceptId]);
+      expect(mid.scaffold?.cue).toBeUndefined();
+
+      expect(high.scaffold?.level).toBe('faded');
+      expect(high.retrievalPrompt).toBeUndefined();
+      expect(high.scaffold?.cue).toBeUndefined();
+      expect(high.prompt).not.toMatch(/Before solving|Choose the approach first|Cue:/i);
+    }
+  });
 });
 
 describe('lesson + label maps', () => {
@@ -230,5 +299,19 @@ describe('lesson + label maps', () => {
     for (const conceptId of ALL_CONCEPTS) {
       expect(CONCEPT_LABELS[conceptId]).toBeTruthy();
     }
+  });
+
+  it('adds concise lesson-level pretrieval moments before representative explanations', () => {
+    const pretrievalSteps = allLessons.flatMap((lesson) =>
+      lesson.steps.flatMap((step) => {
+        if (step.type === 'simulation' || !step.pretrieval) return [];
+        return [{ lessonId: lesson.lessonId, prompt: step.pretrieval.prompt }];
+      }),
+    );
+
+    expect(pretrievalSteps.length).toBeGreaterThanOrEqual(8);
+    expect(pretrievalSteps.some((step) => step.lessonId === 'intro-basic-probability' && /Before you flip/i.test(step.prompt))).toBe(true);
+    expect(pretrievalSteps.some((step) => step.lessonId === 'counting-outcomes' && /which sides/i.test(step.prompt))).toBe(true);
+    expect(pretrievalSteps.every((step) => step.prompt.length > 0 && step.prompt.length <= 140)).toBe(true);
   });
 });

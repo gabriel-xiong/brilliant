@@ -29,6 +29,8 @@ export interface GeneratedProblemCardProps {
   onFirstResult?: (correct: boolean, answer: string) => void;
   /** Hide the worked-solution / wrong-answer AI affordances (used by the exam). */
   hideExplanations?: boolean;
+  /** Hide the concept chip when the solving context should not reveal the topic. */
+  hideConceptLabel?: boolean;
   /** Label for the primary advance button shown after answering. */
   nextLabel?: string;
   /** Called when the learner clicks the advance button. Omit to hide it. */
@@ -66,6 +68,15 @@ function formatWrongAnswerFeedback(explanation: string, solutionSteps: string[])
   return `Your answer was wrong because ${lowerFirst(diagnostic)}\n\nFull solution:\n${fullSolution}`;
 }
 
+function learnerProblemPrompt(prompt: string): string {
+  return prompt
+    .replace(/^Before calculating,\s+.*?\.\s+Cue:\s+.*?\.\s+Then solve:\s*/i, '')
+    .replace(/^Before calculating,\s+.*?\.\s+Then solve:\s*/i, '')
+    .replace(/^Choose the approach first,\s+then solve:\s*/i, '')
+    .replace(/^Choose the approach first:\s+.*?\.\s*/i, '')
+    .trim();
+}
+
 /**
  * Renders one deterministically-generated problem and grades it against the
  * solver's exact answer using the same tolerant numeric matcher the lessons
@@ -79,6 +90,7 @@ export function GeneratedProblemCard({
   index,
   onFirstResult,
   hideExplanations = false,
+  hideConceptLabel = false,
   nextLabel = 'Next problem',
   onNext,
 }: GeneratedProblemCardProps) {
@@ -95,6 +107,7 @@ export function GeneratedProblemCard({
   const [solutionLoading, setSolutionLoading] = useState(false);
   const [solutionText, setSolutionText] = useState<string | undefined>();
   const [solutionAI, setSolutionAI] = useState(false);
+  const [retrievalOpen, setRetrievalOpen] = useState(false);
 
   const aiOn = useMemo(() => isAIEnabled(), []);
 
@@ -111,6 +124,7 @@ export function GeneratedProblemCard({
     setSolutionLoading(false);
     setSolutionText(undefined);
     setSolutionAI(false);
+    setRetrievalOpen(false);
   }, [problem.id]);
 
   const conceptLabel = CONCEPT_LABELS[problem.conceptId] ?? problem.conceptId;
@@ -121,6 +135,7 @@ export function GeneratedProblemCard({
   const band = levelToBand(level);
   const isAIScenario = problem.source === 'ai';
   const solution = useMemo(() => safeSolution(problem), [problem]);
+  const visiblePrompt = useMemo(() => learnerProblemPrompt(problem.prompt), [problem.prompt]);
 
   const handleSubmit = () => {
     const trimmed = draft.trim();
@@ -146,7 +161,7 @@ export function GeneratedProblemCard({
       const [explanation, worked] = await Promise.all([
         aiExplainWrongAnswer({
           conceptId: problem.conceptId,
-          prompt: problem.prompt,
+          prompt: visiblePrompt,
           learnerAnswer: answerToExplain,
           correctAnswer: problem.acceptedAnswer,
           params: problem.params,
@@ -176,7 +191,7 @@ export function GeneratedProblemCard({
     try {
       const result = await aiWorkedSolution({
         conceptId: problem.conceptId,
-        prompt: problem.prompt,
+        prompt: visiblePrompt,
         solution,
       });
       setSolutionText(result.steps.map((step) => `• ${step}`).join('\n'));
@@ -195,7 +210,9 @@ export function GeneratedProblemCard({
               Question {index}
             </Typography>
           )}
-          <Chip size="small" label={conceptLabel} variant="outlined" sx={{ fontWeight: 700 }} />
+          {!hideConceptLabel && (
+            <Chip size="small" label={conceptLabel} variant="outlined" sx={{ fontWeight: 700 }} />
+          )}
           <Chip
             size="small"
             label={`${BAND_LABEL[band]} · Lv ${level}`}
@@ -216,8 +233,41 @@ export function GeneratedProblemCard({
           )}
         </Stack>
 
+        {problem.retrievalPrompt && (
+          <Box sx={{ mb: 2 }}>
+            <Button
+              variant="outlined"
+              size="small"
+              onClick={() => setRetrievalOpen((open) => !open)}
+              aria-expanded={retrievalOpen}
+              sx={{ fontWeight: 850, borderRadius: 999 }}
+            >
+              {retrievalOpen ? 'Hide planning step' : 'Try first: plan your approach'}
+            </Button>
+            {retrievalOpen && (
+              <Box
+                role="note"
+                sx={{
+                  mt: 1,
+                  p: 1.5,
+                  borderRadius: 3,
+                  border: '1px solid rgba(67,97,238,0.14)',
+                  backgroundColor: 'rgba(67,97,238,0.06)',
+                }}
+              >
+                <Typography variant="overline" color="primary" sx={{ fontWeight: 850 }}>
+                  Before solving
+                </Typography>
+                <Typography variant="body2" sx={{ fontWeight: 750, mt: 0.25 }}>
+                  {problem.retrievalPrompt}
+                </Typography>
+              </Box>
+            )}
+          </Box>
+        )}
+
         <Typography variant="body1" component="p" sx={{ mb: 2, lineHeight: 1.5, fontSize: { xs: '1.05rem', md: '1.14rem' } }}>
-          {problem.prompt}
+          {visiblePrompt}
         </Typography>
 
         <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.25} alignItems={{ xs: 'stretch', sm: 'flex-start' }}>

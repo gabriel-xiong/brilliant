@@ -33,14 +33,21 @@ import {
   parseConceptId,
   parseConceptIds,
   normalizePracticeConceptSelection,
+  buildPracticeSessionSlots,
+  orderPracticeConceptsForSession,
+  dueReviewConcepts as getDueReviewConcepts,
   startLevelForMode,
   weakestConcept,
+  conceptPracticeSignal,
+  type ConceptPracticeSignal,
   type DifficultyMode,
   type PracticeConfig,
 } from '../services/practiceService';
 import { getEffectiveStatus } from '../services/lessonProgression';
+import { getPracticeReadinessSummary } from '../services/masteryLabels';
 import {
   isPracticeUnlockedForConcept,
+  lessonIdForConcept,
   unlockedConcepts,
   type StatusGetter,
 } from '../services/practiceAccess';
@@ -148,6 +155,31 @@ function saveConfig(config: PracticeConfig) {
 type Phase = 'config' | 'active' | 'summary';
 type ConceptNumberMap = Partial<Record<ConceptId, number>>;
 type ConceptSessionStats = Partial<Record<ConceptId, { answered: number; correct: number }>>;
+type ConceptSignalMap = Record<ConceptId, ConceptPracticeSignal>;
+
+function formatPercent(value: number | null): string {
+  return value == null ? 'New' : `${Math.round(value * 100)}%`;
+}
+
+function conceptTrail(concepts: ConceptId[]): string {
+  if (concepts.length === 0) return 'No topics attempted';
+  if (concepts.length === 1) return 'One topic at a time';
+  return concepts.map((id) => CONCEPT_LABELS[id]).join(' -> ');
+}
+
+function recommendationCopy(id: ConceptId, signal: ConceptPracticeSignal): string {
+  if (signal.dueForReview) return `${CONCEPT_LABELS[id]}: ${signal.dueReason.toLowerCase()}`;
+  if (signal.answered === 0) return `${CONCEPT_LABELS[id]}: ready for first practice`;
+  if (signal.status === 'needs-practice') return `${CONCEPT_LABELS[id]}: needs a few more correct reviews`;
+  return `${CONCEPT_LABELS[id]}: keep it fresh`;
+}
+
+function masteryMovementCopy(concepts: ConceptId[], startLevels: ConceptNumberMap, maxLevels: ConceptNumberMap): string {
+  const moved = concepts.filter((id) => (maxLevels[id] ?? MIN_LEVEL) > (startLevels[id] ?? MIN_LEVEL));
+  if (moved.length === 0) return 'Steady signal';
+  if (moved.length === 1) return `${CONCEPT_LABELS[moved[0]]} moved up`;
+  return `${moved.length} topics moved up`;
+}
 
 function PracticeInner({ summary, getStatus }: { summary: UserSummary | null; getStatus: StatusGetter }) {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -160,6 +192,9 @@ function PracticeInner({ summary, getStatus }: { summary: UserSummary | null; ge
   // to the first unlocked concept. A query param is honored only if unlocked so
   // a stale/locked deep link can never open a gated drill.
   const requestedConcept = parseConceptId(searchParams.get('concept'));
+  const requestedConceptsParam = searchParams.get('concepts');
+  const requestedConcepts = useMemo(() => parseConceptIds(requestedConceptsParam), [requestedConceptsParam]);
+  const reviewMode = searchParams.get('mode') === 'review';
   const weakest = weakestConcept(summary);
   const unlocked = useMemo(() => unlockedConcepts(getStatus), [getStatus]);
   const initialConcept =
@@ -174,19 +209,22 @@ function PracticeInner({ summary, getStatus }: { summary: UserSummary | null; ge
     () => {
       const savedConcepts = saved.selectedConcepts ?? [];
       const requestedSelection =
-        requestedConcept && unlocked.includes(requestedConcept)
-          ? [requestedConcept, ...savedConcepts.filter((id) => id !== requestedConcept)]
+        requestedConcepts.length > 0
+          ? requestedConcepts
+          : requestedConcept && unlocked.includes(requestedConcept)
+            ? [requestedConcept, ...savedConcepts.filter((id) => id !== requestedConcept)]
           : savedConcepts.length > 0
             ? savedConcepts
             : [initialConcept];
       return normalizePracticeConceptSelection(requestedSelection, unlocked, initialConcept);
     },
-    [initialConcept, requestedConcept, saved.selectedConcepts, unlocked],
+    [initialConcept, requestedConcept, requestedConcepts, saved.selectedConcepts, unlocked],
   );
   const firstConcept = initialSelection[0] ?? initialConcept;
 
   const [selectedConcepts, setSelectedConcepts] = useState<ConceptId[]>(initialSelection);
   const [activeConcepts, setActiveConcepts] = useState<ConceptId[]>(initialSelection);
+  const [conceptSequence, setConceptSequence] = useState<ConceptId[]>(initialSelection);
   const [conceptIndex, setConceptIndex] = useState(0);
   const [concept, setConcept] = useState<ConceptId>(firstConcept);
   const [phase, setPhase] = useState<Phase>('config');
@@ -202,6 +240,16 @@ function PracticeInner({ summary, getStatus }: { summary: UserSummary | null; ge
 
   const difficultyMode: DifficultyMode = diffChoice === 'adaptive' ? 'adaptive' : customLevel;
   const activeConfig: PracticeConfig = { questionCount: countChoice, difficultyMode, selectedConcepts };
+  const signalNow = useMemo(() => new Date(), [summary]);
+  const practiceSignals = useMemo(
+    () =>
+      ALL_CONCEPTS.reduce<ConceptSignalMap>((signals, id) => {
+        const lessonId = lessonIdForConcept(id);
+        signals[id] = conceptPracticeSignal(id, summary, signalNow, lessonId ? getStatus(lessonId) : undefined);
+        return signals;
+      }, {} as ConceptSignalMap),
+    [getStatus, signalNow, summary],
+  );
 
   const [level, setLevel] = useState<number>(() =>
     startLevelForMode(saved.difficultyMode, firstConcept, summary),
@@ -212,6 +260,11 @@ function PracticeInner({ summary, getStatus }: { summary: UserSummary | null; ge
     [firstConcept]: startLevelForMode(saved.difficultyMode, firstConcept, summary),
   }));
   const [statsByConcept, setStatsByConcept] = useState<ConceptSessionStats>({});
+  const [dueReviewConcepts, setDueReviewConcepts] = useState<ConceptId[]>([]);
+  const [dueReviewStats, setDueReviewStats] = useState({ answered: 0, correct: 0 });
+  const [startLevelsByConcept, setStartLevelsByConcept] = useState<ConceptNumberMap>(() => ({
+    [firstConcept]: startLevelForMode(saved.difficultyMode, firstConcept, summary),
+  }));
   const [maxLevelsByConcept, setMaxLevelsByConcept] = useState<ConceptNumberMap>(() => ({
     [firstConcept]: startLevelForMode(saved.difficultyMode, firstConcept, summary),
   }));
@@ -304,7 +357,13 @@ function PracticeInner({ summary, getStatus }: { summary: UserSummary | null; ge
       : [...selectedConcepts, next];
     setSelectedConcepts(nextSelection);
     const params = new URLSearchParams(searchParams);
-    params.set('concept', nextSelection[0] ?? next);
+    if (reviewMode || params.has('concepts')) {
+      params.set('mode', 'review');
+      params.set('concepts', nextSelection.join(','));
+      params.delete('concept');
+    } else {
+      params.set('concept', nextSelection[0] ?? next);
+    }
     setSearchParams(params, { replace: true });
   };
 
@@ -316,18 +375,31 @@ function PracticeInner({ summary, getStatus }: { summary: UserSummary | null; ge
 
   const startSession = () => {
     const sessionConcepts = normalizePracticeConceptSelection(selectedConcepts, unlocked, initialConcept);
-    const startConcept = sessionConcepts[0] ?? initialConcept;
-    const startLevels = buildStartLevels(sessionConcepts);
+    const orderedConcepts = orderPracticeConceptsForSession(sessionConcepts, summary, signalNow);
+    const activeSessionConcepts = orderedConcepts.length > 0 ? orderedConcepts : sessionConcepts;
+    const sessionSlots =
+      countChoice === 'unlimited'
+        ? []
+        : buildPracticeSessionSlots(activeSessionConcepts, summary, 1, activeConfig, signalNow);
+    const plannedSequence = sessionSlots.map((slot) => slot.conceptId);
+    const sessionSequence = plannedSequence.length > 0 ? plannedSequence : activeSessionConcepts;
+    const startConcept = sessionSequence[0] ?? initialConcept;
+    const startLevels = buildStartLevels(activeSessionConcepts);
     const startLevel = startLevels[startConcept] ?? startLevelForMode(difficultyMode, startConcept, summary);
+    const dueAtStart = getDueReviewConcepts(activeSessionConcepts, summary, signalNow);
     saveConfig({ ...activeConfig, selectedConcepts: sessionConcepts });
     prefetchRef.current.clear();
     answeredRef.current = false;
     lastResultRef.current = null;
     answeredCountRef.current = 0;
-    setActiveConcepts(sessionConcepts);
+    setActiveConcepts(activeSessionConcepts);
+    setConceptSequence(sessionSequence);
     setConceptIndex(0);
     setConcept(startConcept);
+    setDueReviewConcepts(dueAtStart);
+    setDueReviewStats({ answered: 0, correct: 0 });
     setLevelsByConcept(startLevels);
+    setStartLevelsByConcept(startLevels);
     setMaxLevelsByConcept(startLevels);
     setLevel(startLevel);
     setMaxLevelSeen(startLevel);
@@ -346,6 +418,9 @@ function PracticeInner({ summary, getStatus }: { summary: UserSummary | null; ge
     lastResultRef.current = { conceptId: concept, correct, streak: nextStreak };
     answeredCountRef.current += 1;
     setStats((prev) => ({ answered: prev.answered + 1, correct: prev.correct + (correct ? 1 : 0) }));
+    if (dueReviewConcepts.includes(concept)) {
+      setDueReviewStats((prev) => ({ answered: prev.answered + 1, correct: prev.correct + (correct ? 1 : 0) }));
+    }
     setStatsByConcept((prev) => {
       const current = prev[concept] ?? { answered: 0, correct: 0 };
       return {
@@ -392,8 +467,9 @@ function PracticeInner({ summary, getStatus }: { summary: UserSummary | null; ge
       setMaxLevelsByConcept(updatedMaxLevels);
       setMaxLevelSeen((m) => Math.max(m, nextLevel));
     }
-    const nextIndex = (conceptIndex + 1) % Math.max(activeConcepts.length, 1);
-    const nextConcept = activeConcepts[nextIndex] ?? concept;
+    const sequence = conceptSequence.length > 0 ? conceptSequence : activeConcepts;
+    const nextIndex = (conceptIndex + 1) % Math.max(sequence.length, 1);
+    const nextConcept = sequence[nextIndex] ?? concept;
     setConceptIndex(nextIndex);
     setConcept(nextConcept);
     setLevel(updatedLevels[nextConcept] ?? startLevelForMode(difficultyMode, nextConcept, summary));
@@ -406,16 +482,58 @@ function PracticeInner({ summary, getStatus }: { summary: UserSummary | null; ge
   // ---- Config (setup) phase ------------------------------------------------
   if (phase === 'config') {
     const selectedTopicCopy =
-      selectedConcepts.length > 1
+      reviewMode
+        ? `${selectedConcepts.length} recommended topic${selectedConcepts.length === 1 ? '' : 's'} selected. Adjust anything before starting.`
+        : selectedConcepts.length > 1
         ? `Mixed practice will rotate through ${selectedConcepts.length} topics.`
         : 'Pick one topic, or add more unlocked topics for mixed practice.';
     const questionCountLabel = countChoice === 'unlimited' ? 'Unlimited' : `${countChoice} questions`;
     const difficultySummary =
       diffChoice === 'adaptive' ? 'Adaptive level' : `${BAND_LABEL[levelToBand(customLevel)]} - Level ${customLevel}`;
+    const selectedSignals = selectedConcepts.map((id) => ({ id, signal: practiceSignals[id] }));
+    const dueReviewCount = selectedSignals.filter(({ signal }) => signal.dueForReview).length;
+    const readinessSummary = getPracticeReadinessSummary(summary, selectedConcepts);
+    const orderedPreview = orderPracticeConceptsForSession(selectedConcepts, summary, signalNow);
+    const masteryCounts = selectedSignals.reduce(
+      (counts, { signal }) => ({
+        needsPractice: counts.needsPractice + (signal.status === 'needs-practice' ? 1 : 0),
+        proficient: counts.proficient + (signal.status === 'proficient' ? 1 : 0),
+        mastered: counts.mastered + (signal.status === 'mastered' ? 1 : 0),
+      }),
+      { needsPractice: 0, proficient: 0, mastered: 0 },
+    );
+    const reviewCopy =
+      reviewMode
+        ? dueReviewCount > 0
+          ? `${dueReviewCount} selected topic${dueReviewCount === 1 ? '' : 's'} are due for review now.`
+          : `${selectedConcepts.length} recommended topic${selectedConcepts.length === 1 ? '' : 's'} selected for a focused review.`
+        : dueReviewCount > 0
+        ? `${dueReviewCount} selected topic${dueReviewCount === 1 ? '' : 's'} will come back for review.`
+        : 'No selected topics are due right now.';
+    const recommendationSummary = selectedSignals
+      .slice()
+      .sort((a, b) => Number(b.signal.dueForReview) - Number(a.signal.dueForReview))
+      .slice(0, 2)
+      .map(({ id, signal }) => recommendationCopy(id, signal))
+      .join('; ');
+    const mixCopy =
+      reviewMode
+        ? `Recommended because ${recommendationSummary}.`
+        : selectedConcepts.length > 1
+        ? `Interleaves in this order: ${conceptTrail(orderedPreview)}.`
+        : 'Add another unlocked topic to make practice mixed.';
 
     return (
       <Container maxWidth="lg" sx={{ py: { xs: 2.5, md: 3.5 } }}>
-        <SessionHeader aiOn={aiOn} />
+        <SessionHeader
+          aiOn={aiOn}
+          title={reviewMode ? 'Review weak spots' : undefined}
+          subtitle={
+            reviewMode
+              ? 'A focused practice plan built from due reviews, recent misses, and topics that need more signal.'
+              : undefined
+          }
+        />
 
         <Card
           sx={{
@@ -439,12 +557,19 @@ function PracticeInner({ summary, getStatus }: { summary: UserSummary | null; ge
                 spacing={1.5}
               >
                 <Box>
-                  <Chip label="Practice setup" size="small" color="primary" sx={{ fontWeight: 800, mb: 1 }} />
+                  <Chip
+                    label={reviewMode ? 'Targeted review' : 'Practice setup'}
+                    size="small"
+                    color="primary"
+                    sx={{ fontWeight: 800, mb: 1 }}
+                  />
                   <Typography variant="h5" component="h2" sx={{ fontWeight: 850, letterSpacing: '-0.02em' }}>
-                    Build a focused drill
+                    {reviewMode ? 'Review what needs attention' : 'Build a focused drill'}
                   </Typography>
                   <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5, maxWidth: 620 }}>
-                    Choose the topics, length, and challenge level before the first problem appears.
+                    {reviewMode
+                      ? 'Start with the suggested topics, then keep the session short or go longer.'
+                      : 'Choose the topics, length, and challenge level before the first problem appears.'}
                   </Typography>
                 </Box>
                 <Chip
@@ -540,6 +665,44 @@ function PracticeInner({ summary, getStatus }: { summary: UserSummary | null; ge
                           </Tooltip>
                         );
                       })}
+                    </Box>
+
+                    <Box
+                      sx={{
+                        mt: 2,
+                        display: 'grid',
+                        gridTemplateColumns: { xs: '1fr', sm: 'repeat(2, minmax(0, 1fr))' },
+                        gap: 1,
+                      }}
+                    >
+                      {selectedSignals.map(({ id, signal }) => (
+                        <Box
+                          key={id}
+                          sx={{
+                            p: 1.25,
+                            borderRadius: 3,
+                            border: '1px solid rgba(31,36,48,0.08)',
+                            backgroundColor: signal.dueForReview ? 'rgba(255,167,38,0.10)' : 'rgba(31,36,48,0.03)',
+                          }}
+                        >
+                          <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={1}>
+                            <Typography variant="body2" sx={{ fontWeight: 850 }}>
+                              {CONCEPT_LABELS[id]}
+                            </Typography>
+                            <Chip
+                              size="small"
+                              label={signal.label}
+                              color={signal.status === 'mastered' ? 'success' : signal.status === 'proficient' ? 'primary' : 'default'}
+                              variant={signal.status === 'needs-practice' ? 'outlined' : 'filled'}
+                              sx={{ height: 22, fontWeight: 800 }}
+                            />
+                          </Stack>
+                          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
+                            {signal.dueForReview ? signal.dueReason : `${formatPercent(signal.accuracy)} accuracy`}
+                            {signal.bestLevel ? ` · best level ${signal.bestLevel}` : ''}
+                          </Typography>
+                        </Box>
+                      ))}
                     </Box>
                   </Box>
 
@@ -683,7 +846,11 @@ function PracticeInner({ summary, getStatus }: { summary: UserSummary | null; ge
                       Your session
                     </Typography>
                     <Typography variant="h6" sx={{ fontWeight: 850, mt: 0.25 }}>
-                      {selectedConcepts.length > 1 ? 'Mixed practice' : CONCEPT_LABELS[selectedConcepts[0]]}
+                      {reviewMode
+                        ? 'Review weak spots'
+                        : selectedConcepts.length > 1
+                          ? 'Mixed practice'
+                          : CONCEPT_LABELS[selectedConcepts[0]]}
                     </Typography>
                   </Box>
 
@@ -712,9 +879,52 @@ function PracticeInner({ summary, getStatus }: { summary: UserSummary | null; ge
                         {difficultySummary}
                       </Typography>
                     </Stack>
+                    <Stack direction="row" justifyContent="space-between" spacing={2}>
+                      <Typography variant="body2" color="text.secondary">
+                        Review due
+                      </Typography>
+                      <Typography variant="body2" sx={{ fontWeight: 800 }}>
+                        {dueReviewCount}
+                      </Typography>
+                    </Stack>
+                    <Stack direction="row" justifyContent="space-between" spacing={2}>
+                      <Typography variant="body2" color="text.secondary">
+                        Ready
+                      </Typography>
+                      <Typography variant="body2" sx={{ fontWeight: 800, textAlign: 'right' }}>
+                        {masteryCounts.mastered} mastered · {masteryCounts.proficient} proficient
+                      </Typography>
+                    </Stack>
+                    <Stack direction="row" justifyContent="space-between" spacing={2}>
+                      <Typography variant="body2" color="text.secondary">
+                        Readiness
+                      </Typography>
+                      <Typography variant="body2" sx={{ fontWeight: 800, textAlign: 'right' }}>
+                        {readinessSummary.label}
+                      </Typography>
+                    </Stack>
                   </Stack>
 
                   <Divider />
+
+                  <Box
+                    sx={{
+                      p: 1.5,
+                      borderRadius: 3,
+                      border: '1px solid rgba(31,36,48,0.08)',
+                      backgroundColor: '#fff',
+                    }}
+                  >
+                    <Typography variant="overline" color="text.secondary" sx={{ fontWeight: 850 }}>
+                      Practice plan
+                    </Typography>
+                    <Typography variant="body2" sx={{ mt: 0.25, fontWeight: 750 }}>
+                      {reviewCopy}
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
+                      {mixCopy} Retrieval prompts ask what to try before calculating.
+                    </Typography>
+                  </Box>
 
                   <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75 }}>
                     {selectedConcepts.map((id) => (
@@ -732,7 +942,9 @@ function PracticeInner({ summary, getStatus }: { summary: UserSummary | null; ge
                     disabled={selectedConcepts.length === 0}
                     sx={{ py: 1.15, borderRadius: 3, fontWeight: 850 }}
                   >
-                    {selectedConcepts.length > 1
+                    {reviewMode
+                      ? `Start review (${selectedConcepts.length} topic${selectedConcepts.length === 1 ? '' : 's'})`
+                      : selectedConcepts.length > 1
                       ? `Start mixed practice (${selectedConcepts.length} topics)`
                       : 'Start practice'}
                   </Button>
@@ -758,6 +970,10 @@ function PracticeInner({ summary, getStatus }: { summary: UserSummary | null; ge
     const accuracy = stats.answered > 0 ? Math.round((stats.correct / stats.answered) * 100) : 0;
     const practicedConcepts = activeConcepts.filter((id) => (statsByConcept[id]?.answered ?? 0) > 0);
     const practicedLabels = practicedConcepts.map((id) => CONCEPT_LABELS[id]);
+    const dueReviewAccuracy =
+      dueReviewStats.answered > 0 ? Math.round((dueReviewStats.correct / dueReviewStats.answered) * 100) : null;
+    const movementCopy = masteryMovementCopy(practicedConcepts, startLevelsByConcept, maxLevelsByConcept);
+    const firstTryLabel = stats.answered > 0 ? `${accuracy}%` : 'No answers yet';
     const highestLevel = Math.max(
       maxLevelSeen,
       ...practicedConcepts.map((id) => maxLevelsByConcept[id] ?? levelsByConcept[id] ?? MIN_LEVEL),
@@ -795,6 +1011,46 @@ function PracticeInner({ summary, getStatus }: { summary: UserSummary | null; ge
               </strong>{' '}
               and reached the <strong>{BAND_LABEL[levelToBand(highestLevel)]}</strong> level (level {highestLevel}).
             </Typography>
+            <Box
+              sx={{
+                display: 'grid',
+                gridTemplateColumns: { xs: '1fr', sm: 'repeat(2, minmax(0, 1fr))' },
+                gap: 1.25,
+                mb: 2.5,
+              }}
+            >
+              <SummaryMetric label="Concept mix" value={practicedConcepts.length} detail={conceptTrail(practicedConcepts)} />
+              <SummaryMetric
+                label="Due review"
+                value={`${dueReviewStats.answered}/${stats.answered}`}
+                detail={
+                  dueReviewStats.answered > 0
+                    ? `${dueReviewAccuracy}% correct on review items`
+                    : `${dueReviewConcepts.length} due topic${dueReviewConcepts.length === 1 ? '' : 's'} at start`
+                }
+              />
+              <SummaryMetric label="Retrieval accuracy" value={firstTryLabel} detail="First try before feedback" />
+              <SummaryMetric label="Mastery signal" value={movementCopy} detail="Based on level movement this session" />
+            </Box>
+            {practicedConcepts.length > 0 && (
+              <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75, mb: 2.5 }}>
+                {practicedConcepts.map((id) => {
+                  const conceptStats = statsByConcept[id];
+                  const conceptAccuracy =
+                    conceptStats && conceptStats.answered > 0
+                      ? Math.round((conceptStats.correct / conceptStats.answered) * 100)
+                      : 0;
+                  return (
+                    <Chip
+                      key={id}
+                      size="small"
+                      label={`${CONCEPT_LABELS[id]} · ${conceptStats?.answered ?? 0} q · ${conceptAccuracy}%`}
+                      sx={{ fontWeight: 750 }}
+                    />
+                  );
+                })}
+              </Box>
+            )}
             {remediationConcept && remediationStats && (
               <PracticeRemediationCard
                 concept={remediationConcept}
@@ -827,6 +1083,7 @@ function PracticeInner({ summary, getStatus }: { summary: UserSummary | null; ge
   const accuracy = stats.answered > 0 ? Math.round((stats.correct / stats.answered) * 100) : null;
   const band = levelToBand(level);
   const currentStreak = streaksByConcept[concept] ?? 0;
+  const currentSignal = practiceSignals[concept];
   const topicLabel = activeConcepts.length > 1 ? `Mixed practice · ${activeConcepts.length} topics` : CONCEPT_LABELS[concept];
   const unlimited = countChoice === 'unlimited';
   const total = unlimited ? 0 : countChoice;
@@ -836,6 +1093,8 @@ function PracticeInner({ summary, getStatus }: { summary: UserSummary | null; ge
     <Container maxWidth="md" sx={{ py: { xs: 2.5, md: 3.5 } }}>
       <SessionHeader
         aiOn={aiOn}
+        title={reviewMode ? 'Review weak spots' : undefined}
+        subtitle={reviewMode ? 'Work through the recommended topics and watch what improves.' : undefined}
         right={
           <Button onClick={newSession} variant="text" size="small" sx={{ whiteSpace: 'nowrap', flexShrink: 0 }}>
             End &amp; restart
@@ -845,8 +1104,11 @@ function PracticeInner({ summary, getStatus }: { summary: UserSummary | null; ge
 
       <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1.5, flexWrap: 'wrap', gap: 1 }}>
         <Chip size="small" color="primary" variant="outlined" label={topicLabel} sx={{ fontWeight: 700 }} />
-        {activeConcepts.length > 1 && (
-          <Chip size="small" variant="outlined" label={CONCEPT_LABELS[concept]} sx={{ fontWeight: 700 }} />
+        {dueReviewConcepts.includes(concept) && (
+          <Chip size="small" color="warning" label="Review due" sx={{ fontWeight: 800 }} />
+        )}
+        {currentSignal && (
+          <Chip size="small" variant="outlined" label={currentSignal.label} sx={{ fontWeight: 700 }} />
         )}
         <Chip size="small" variant="outlined" label={`${BAND_LABEL[band]} · Level ${level}`} sx={{ fontWeight: 700 }} />
         {diffChoice === 'custom' && (
@@ -894,6 +1156,7 @@ function PracticeInner({ summary, getStatus }: { summary: UserSummary | null; ge
         problem={problem}
         onFirstResult={handleFirstResult}
         onNext={handleNext}
+        hideConceptLabel={activeConcepts.length > 1}
         nextLabel={isFinalQuestion ? 'See results' : 'Next problem'}
       />
 
@@ -905,6 +1168,29 @@ function PracticeInner({ summary, getStatus }: { summary: UserSummary | null; ge
         </Stack>
       )}
     </Container>
+  );
+}
+
+function SummaryMetric({ label, value, detail }: { label: string; value: ReactNode; detail: string }) {
+  return (
+    <Box
+      sx={{
+        p: 1.5,
+        borderRadius: 3,
+        border: '1px solid rgba(31,36,48,0.08)',
+        backgroundColor: 'rgba(31,36,48,0.03)',
+      }}
+    >
+      <Typography variant="overline" color="text.secondary" sx={{ fontWeight: 850 }}>
+        {label}
+      </Typography>
+      <Typography variant="h6" sx={{ fontWeight: 850, mt: 0.25 }}>
+        {value}
+      </Typography>
+      <Typography variant="caption" color="text.secondary">
+        {detail}
+      </Typography>
+    </Box>
   );
 }
 
@@ -950,7 +1236,17 @@ function PracticeRemediationCard({
 }
 
 /** Shared page header for the practice surface. */
-function SessionHeader({ aiOn, right }: { aiOn: boolean; right?: ReactNode }) {
+function SessionHeader({
+  aiOn,
+  right,
+  title = 'Adaptive practice',
+  subtitle,
+}: {
+  aiOn: boolean;
+  right?: ReactNode;
+  title?: string;
+  subtitle?: string;
+}) {
   return (
     <Stack
       direction={{ xs: 'column', sm: 'row' }}
@@ -961,11 +1257,15 @@ function SessionHeader({ aiOn, right }: { aiOn: boolean; right?: ReactNode }) {
     >
       <Box>
         <Typography variant="h4" component="h1" gutterBottom>
-          Adaptive practice
+          {title}
         </Typography>
         <Typography variant="body1" color="text.secondary" sx={{ maxWidth: 560 }}>
-          Fresh problems tuned to your level.{' '}
-          {aiOn ? 'AI explains anything you miss.' : 'Worked solutions are always one tap away.'}
+          {subtitle ?? (
+            <>
+              Fresh problems tuned to your level.{' '}
+              {aiOn ? 'AI explains anything you miss.' : 'Worked solutions are always one tap away.'}
+            </>
+          )}
         </Typography>
       </Box>
       <Stack direction="row" spacing={1} alignItems="center" sx={{ flexShrink: 0, flexWrap: 'nowrap' }}>

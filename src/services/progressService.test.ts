@@ -7,6 +7,7 @@ import {
   loadProgress,
   localDateString,
   maxMasteryStatus,
+  mergePracticeConceptStat,
   saveLessonProgress,
   saveProgress,
   type StepProgress,
@@ -205,6 +206,55 @@ describe('progressService', () => {
       await saveLessonProgress('', reviewAttempt);
 
       expect(loadProgress('intro-basic-probability')?.masteryStatus).toBe('mastered');
+    });
+  });
+
+  describe('practice stat review fields', () => {
+    it('tracks recent misses and resets the success streak after a mixed session', () => {
+      const merged = mergePracticeConceptStat(
+        {
+          answered: 4,
+          correct: 4,
+          bestLevel: 5,
+          lastLevel: 5,
+          lastPracticed: '2026-06-01T00:00:00.000Z',
+          successStreak: 4,
+          recentMisses: 0,
+        },
+        { answered: 3, correct: 2, levelReached: 6 },
+        '2026-06-02T00:00:00.000Z',
+      );
+
+      expect(merged).toMatchObject({
+        answered: 7,
+        correct: 6,
+        bestLevel: 6,
+        lastLevel: 6,
+        lastPracticed: '2026-06-02T00:00:00.000Z',
+        lastReviewed: '2026-06-02T00:00:00.000Z',
+        successStreak: 0,
+        recentMisses: 1,
+      });
+    });
+
+    it('extends the success streak and cools recent misses after a perfect session', () => {
+      const merged = mergePracticeConceptStat(
+        {
+          answered: 5,
+          correct: 4,
+          bestLevel: 4,
+          lastLevel: 4,
+          lastPracticed: '2026-06-01T00:00:00.000Z',
+          successStreak: 1,
+          recentMisses: 2,
+        },
+        { answered: 2, correct: 2, levelReached: 3 },
+        '2026-06-03T00:00:00.000Z',
+      );
+
+      expect(merged.successStreak).toBe(3);
+      expect(merged.recentMisses).toBe(0);
+      expect(merged.bestLevel).toBe(4);
     });
   });
 

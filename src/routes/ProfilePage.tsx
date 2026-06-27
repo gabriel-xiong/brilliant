@@ -11,6 +11,7 @@ import {
   Tooltip,
   Typography,
 } from '@mui/material';
+import { useMemo } from 'react';
 import { Link as RouterLink } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { useUserSummary } from '../hooks/useUserSummary';
@@ -24,7 +25,13 @@ import {
 } from '../services/practiceAccess';
 import { getEffectiveStatus } from '../services/lessonProgression';
 import { getMasteryLabel } from '../services/masteryLabels';
-import { BAND_COLOR, BAND_LABEL, levelToBand, weakestConcept } from '../services/practiceService';
+import {
+  BAND_COLOR,
+  BAND_LABEL,
+  levelToBand,
+  recommendedReviewConcepts,
+  type ReviewConceptRecommendation,
+} from '../services/practiceService';
 import type { UserSummary } from '../services/progressService';
 
 export default function ProfilePage() {
@@ -92,11 +99,25 @@ function SignedInDashboard({
   const overallAccuracy = totalAnswered > 0 ? Math.round((totalCorrect / totalAnswered) * 100) : null;
   const conceptsPracticed = practiceEntries.filter((entry) => (entry.answered ?? 0) > 0).length;
 
-  // Weakest concept the learner has actually unlocked, for a one-tap drill.
-  const weakest = weakestConcept(summary);
-  const weakestUnlocked = isPracticeUnlockedForConcept(weakest, getStatus)
-    ? weakest
-    : unlocked[0] ?? null;
+  const signalNow = useMemo(() => new Date(), [summary]);
+  const reviewSuggestions = useMemo(
+    () =>
+      recommendedReviewConcepts(
+        unlocked,
+        summary,
+        signalNow,
+        (conceptId) => {
+          const lessonId = lessonIdForConcept(conceptId);
+          return lessonId ? getStatus(lessonId) : undefined;
+        },
+        3,
+      ),
+    [getStatus, signalNow, summary, unlocked],
+  );
+  const reviewConcepts = reviewSuggestions.map((suggestion) => suggestion.conceptId);
+  const reviewHref =
+    reviewConcepts.length > 0 ? `/practice?mode=review&concepts=${reviewConcepts.join(',')}` : '/practice';
+  const dueSuggestionCount = reviewSuggestions.filter((suggestion) => suggestion.dueForReview).length;
 
   return (
     <Stack spacing={2.5}>
@@ -147,10 +168,10 @@ function SignedInDashboard({
               </Typography>
             )}
           </Box>
-          {weakestUnlocked && (
+          {reviewSuggestions.length > 0 && (
             <Button
               component={RouterLink}
-              to={`/practice?concept=${weakestUnlocked}`}
+              to={reviewHref}
               variant="contained"
               size="small"
             >
@@ -158,6 +179,65 @@ function SignedInDashboard({
             </Button>
           )}
         </Stack>
+
+        {reviewSuggestions.length > 0 && (
+          <Card
+            variant="outlined"
+            sx={{
+              mb: 1.5,
+              border: '1px solid rgba(67,97,238,0.18)',
+              background: 'linear-gradient(135deg, rgba(67,97,238,0.08), rgba(255,255,255,0) 55%), #fff',
+              boxShadow: 'none',
+            }}
+          >
+            <CardContent sx={{ py: 1.75, '&:last-child': { pb: 1.75 } }}>
+              <Stack
+                direction={{ xs: 'column', sm: 'row' }}
+                justifyContent="space-between"
+                alignItems={{ xs: 'flex-start', sm: 'center' }}
+                spacing={1.5}
+              >
+                <Box sx={{ minWidth: 0 }}>
+                  <Stack direction="row" spacing={1} alignItems="center" sx={{ flexWrap: 'wrap', gap: 0.75 }}>
+                    <Typography variant="subtitle1" sx={{ fontWeight: 850 }}>
+                      Suggested review
+                    </Typography>
+                    <Chip
+                      size="small"
+                      label={
+                        dueSuggestionCount > 0
+                          ? `${dueSuggestionCount} due now`
+                          : `${reviewSuggestions.length} topic${reviewSuggestions.length === 1 ? '' : 's'} picked`
+                      }
+                      color={dueSuggestionCount > 0 ? 'warning' : 'primary'}
+                      variant={dueSuggestionCount > 0 ? 'filled' : 'outlined'}
+                      sx={{ height: 22, fontWeight: 800 }}
+                    />
+                  </Stack>
+                  <Typography variant="body2" color="text.secondary" sx={{ mt: 0.25 }}>
+                    Start with topics that are due, recently missed, or need first practice.
+                  </Typography>
+                </Box>
+                <Button component={RouterLink} to={reviewHref} variant="contained" size="small" sx={{ flexShrink: 0 }}>
+                  Start review
+                </Button>
+              </Stack>
+
+              <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75, mt: 1.25 }}>
+                {reviewSuggestions.map((suggestion) => (
+                  <Chip
+                    key={suggestion.conceptId}
+                    size="small"
+                    label={`${CONCEPT_LABELS[suggestion.conceptId]} · ${shortReviewReason(suggestion)}`}
+                    color={suggestion.dueForReview ? 'warning' : 'default'}
+                    variant={suggestion.dueForReview ? 'filled' : 'outlined'}
+                    sx={{ fontWeight: 750 }}
+                  />
+                ))}
+              </Box>
+            </CardContent>
+          </Card>
+        )}
 
         <Stack spacing={1.25}>
           {ALL_CONCEPTS.map((conceptId) => {
@@ -167,6 +247,7 @@ function SignedInDashboard({
             const stat = summary?.practiceStats?.[conceptId];
             const accuracy = stat && stat.answered > 0 ? Math.round((stat.correct / stat.answered) * 100) : null;
             const bestBand = stat && stat.bestLevel > 0 ? levelToBand(stat.bestLevel) : null;
+            const suggestion = reviewSuggestions.find((entry) => entry.conceptId === conceptId) ?? null;
 
             return (
               <ConceptRow
@@ -178,6 +259,7 @@ function SignedInDashboard({
                 accuracy={accuracy}
                 bestBand={bestBand}
                 bestLevel={stat?.bestLevel ?? 0}
+                suggestion={suggestion}
                 practiceTo={`/practice?concept=${conceptId}`}
               />
             );
@@ -196,6 +278,23 @@ function SignedInDashboard({
       </Stack>
     </Stack>
   );
+}
+
+function shortReviewReason(suggestion: ReviewConceptRecommendation): string {
+  switch (suggestion.reason) {
+    case 'recent-misses':
+      return 'recent misses';
+    case 'due':
+      return 'due review';
+    case 'low-accuracy':
+      return 'low accuracy';
+    case 'needs-evidence':
+      return 'more signal needed';
+    case 'new':
+      return 'first practice';
+    case 'keep-fresh':
+      return 'keep fresh';
+  }
 }
 
 function Stat({ label, value }: { label: string; value: number | string }) {
@@ -219,6 +318,7 @@ function ConceptRow({
   accuracy,
   bestBand,
   bestLevel,
+  suggestion,
   practiceTo,
 }: {
   label: string;
@@ -228,6 +328,7 @@ function ConceptRow({
   accuracy: number | null;
   bestBand: ReturnType<typeof levelToBand> | null;
   bestLevel: number;
+  suggestion: ReviewConceptRecommendation | null;
   practiceTo: string;
 }) {
   const statusColor =
@@ -269,6 +370,9 @@ function ConceptRow({
                   sx={{ fontWeight: 700, height: 22 }}
                 />
               )}
+              {suggestion?.dueForReview && (
+                <Chip size="small" color="warning" label="Review due" sx={{ fontWeight: 800, height: 22 }} />
+              )}
             </Stack>
           </Box>
 
@@ -294,9 +398,16 @@ function ConceptRow({
                   </Typography>
                 </>
               ) : (
-                <Typography variant="caption" color="text.secondary">
-                  No practice yet
-                </Typography>
+                <Box>
+                  <Typography variant="caption" color={suggestion ? 'primary' : 'text.secondary'} sx={{ fontWeight: 700 }}>
+                    {suggestion ? shortReviewReason(suggestion) : 'No practice yet'}
+                  </Typography>
+                  {suggestion && (
+                    <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.25 }}>
+                      Suggested review
+                    </Typography>
+                  )}
+                </Box>
               )}
             </Box>
 

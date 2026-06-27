@@ -700,6 +700,95 @@ function StepDescription({ text }: { text: string }) {
   );
 }
 
+function PretrievalPrompt({
+  prompt,
+  value,
+  confirmed,
+  onChange,
+  onConfirm,
+}: {
+  prompt?: string;
+  value: string;
+  confirmed?: boolean;
+  onChange: (value: string) => void;
+  onConfirm?: (value: string) => void;
+}) {
+  if (!prompt) return null;
+  const trimmed = value.trim();
+  const canSubmit = Boolean(trimmed) && !confirmed;
+
+  return (
+    <Box
+      role="note"
+      sx={{
+        mb: 3,
+        p: { xs: 2.25, md: 2.75 },
+        borderRadius: 4,
+        border: '1px solid rgba(0,121,107,0.22)',
+        background:
+          'linear-gradient(135deg, rgba(0,121,107,0.13), rgba(255,255,255,0.96))',
+        boxShadow: '0 16px 38px rgba(0,121,107,0.08)',
+      }}
+    >
+      <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 1 }}>
+        <Chip
+          size="small"
+          label="Make a prediction"
+          sx={{
+            fontWeight: 850,
+            color: '#00695c',
+            backgroundColor: 'rgba(0,121,107,0.10)',
+          }}
+        />
+      </Stack>
+      <Typography variant="h6" component="p" sx={{ fontWeight: 850, lineHeight: 1.35, mb: 1.5 }}>
+        {prompt}
+      </Typography>
+      {onConfirm && (
+        <Stack spacing={1.25}>
+          <TextField
+            label="Your prediction"
+            value={value}
+            onChange={(event) => onChange(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' && canSubmit) {
+                event.preventDefault();
+                onConfirm(trimmed);
+              }
+            }}
+            placeholder="Type a quick guess"
+            size="small"
+            autoComplete="off"
+            disabled={confirmed}
+            sx={{ maxWidth: 520 }}
+          />
+          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ xs: 'stretch', sm: 'center' }}>
+            <Button
+              variant={confirmed ? 'outlined' : 'contained'}
+              color="primary"
+              onClick={() => onConfirm(trimmed)}
+              disabled={!canSubmit}
+              sx={{ fontWeight: 850, alignSelf: { xs: 'stretch', sm: 'flex-start' } }}
+            >
+              {confirmed ? 'Prediction saved' : 'Save prediction'}
+            </Button>
+            {confirmed && (
+              <Typography role="status" variant="body2" color="primary.dark" sx={{ fontWeight: 750 }}>
+                Prediction saved. Now test it.
+              </Typography>
+            )}
+          </Stack>
+        </Stack>
+      )}
+      {!onConfirm && confirmed && (
+        <Typography role="status" variant="body2" color="primary.dark" sx={{ fontWeight: 750 }}>
+          Prediction saved. Now test it.
+        </Typography>
+      )}
+    </Box>
+  );
+}
+
 type FeedbackUiState = 'idle' | 'correct' | 'incorrect' | 'revealed';
 
 /**
@@ -1146,6 +1235,8 @@ export function LessonStepRenderer({
   // and hide the question until the learner clicks Continue. Tracked locally so
   // it does not touch persisted progress; reset whenever the step changes.
   const [exploreRevealed, setExploreRevealed] = useState(false);
+  const [pretrievalDraft, setPretrievalDraft] = useState('');
+  const [pretrievalConfirmed, setPretrievalConfirmed] = useState(false);
   // A free-response question is "answered" once it is correct OR the answer was
   // revealed; both unlock advancing and lock the input.
   const answered = feedbackState === 'correct' || feedbackState === 'revealed';
@@ -1161,9 +1252,13 @@ export function LessonStepRenderer({
 
   useEffect(() => {
     setExploreRevealed(false);
+    setPretrievalDraft('');
+    setPretrievalConfirmed(false);
   }, [step.stepId]);
 
   if (step.type === 'concept') {
+    const hasPretrieval = Boolean(step.pretrieval?.prompt) && !reviewMode;
+    const pretrievalGateOpen = !hasPretrieval || pretrievalConfirmed;
     const conceptDemoBlock = step.demo ? (
       <Box sx={{ mb: 3 }}>
         <EmbeddedDemoView demo={step.demo} />
@@ -1180,17 +1275,24 @@ export function LessonStepRenderer({
           <Typography variant="h4" gutterBottom>
             {step.title}
           </Typography>
-          {step.demoFirst && conceptDemoBlock}
           <ConceptBody body={step.body} />
+          <PretrievalPrompt
+            prompt={step.pretrieval?.prompt}
+            value={pretrievalDraft}
+            confirmed={pretrievalConfirmed}
+            onChange={setPretrievalDraft}
+            onConfirm={hasPretrieval ? () => setPretrievalConfirmed(true) : undefined}
+          />
+          {step.demoFirst && pretrievalGateOpen && conceptDemoBlock}
           {step.figure === 'venn-or' && (
             <Box sx={{ mb: 3, maxWidth: 360 }}>
               <VennFigure />
             </Box>
           )}
-          {!step.demoFirst && conceptDemoBlock}
-          {step.bodyAfterDemo && <ConceptBody body={step.bodyAfterDemo} />}
-          <ConceptAnotherAssist conceptId={lessonConcept} />
-          {showInfoAdvance && (
+          {!step.demoFirst && pretrievalGateOpen && conceptDemoBlock}
+          {pretrievalGateOpen && step.bodyAfterDemo && <ConceptBody body={step.bodyAfterDemo} />}
+          {pretrievalGateOpen && <ConceptAnotherAssist conceptId={lessonConcept} />}
+          {pretrievalGateOpen && showInfoAdvance && (
             <Button variant="contained" onClick={onAdvance}>
               Next
             </Button>
@@ -1233,6 +1335,8 @@ export function LessonStepRenderer({
   const format = problem.format ?? 'multiple-choice';
 
   if (format === 'multi-stage') {
+    const hasPretrieval = Boolean(problem.pretrieval?.prompt) && !reviewMode;
+    const pretrievalGateOpen = !hasPretrieval || pretrievalConfirmed;
     const stages = problem.stages ?? [];
     const allResolved = stages.length > 0 && stages.every((_, index) => questionView.resolvedStages[index]);
     // When the step has an explore phase, the question stays hidden behind a
@@ -1264,21 +1368,35 @@ export function LessonStepRenderer({
             ) : null;
             return problem.demoFirst ? (
               <>
-                {sharedDemo}
                 {exploreBody}
+                <PretrievalPrompt
+                  prompt={problem.pretrieval?.prompt}
+                  value={pretrievalDraft}
+                  confirmed={pretrievalConfirmed}
+                  onChange={setPretrievalDraft}
+                  onConfirm={hasPretrieval ? () => setPretrievalConfirmed(true) : undefined}
+                />
+                {pretrievalGateOpen && sharedDemo}
               </>
             ) : (
               <>
                 {exploreBody}
-                {sharedDemo}
+                <PretrievalPrompt
+                  prompt={problem.pretrieval?.prompt}
+                  value={pretrievalDraft}
+                  confirmed={pretrievalConfirmed}
+                  onChange={setPretrievalDraft}
+                  onConfirm={hasPretrieval ? () => setPretrievalConfirmed(true) : undefined}
+                />
+                {pretrievalGateOpen && sharedDemo}
               </>
             );
           })()}
-          {hasExplore && !questionRevealed ? (
+          {pretrievalGateOpen && hasExplore && !questionRevealed ? (
             <Button variant="contained" size="large" onClick={() => setExploreRevealed(true)}>
               {problem.explore?.continueLabel ?? 'Continue'}
             </Button>
-          ) : (
+          ) : pretrievalGateOpen ? (
             <motion.div
               initial={prefersReducedMotion || !hasExplore ? false : { opacity: 0, y: 16 }}
               animate={{ opacity: 1, y: 0 }}
@@ -1332,13 +1450,15 @@ export function LessonStepRenderer({
                 </Button>
               )}
             </motion.div>
-          )}
+          ) : null}
         </CardContent>
       </Card>
     );
   }
 
   if (format === 'free-response') {
+    const hasPretrieval = Boolean(problem.pretrieval?.prompt) && !reviewMode;
+    const pretrievalGateOpen = !hasPretrieval || pretrievalConfirmed;
     const demoBlock = problem.demo ? (
       <Box sx={{ mb: problem.demoFirst ? 2.5 : 1 }}>
         <EmbeddedDemoView demo={problem.demo} />
@@ -1351,50 +1471,61 @@ export function LessonStepRenderer({
             {problem.title}
           </Typography>
           {problem.description && <StepDescription text={problem.description} />}
-          {problem.demoFirst && demoBlock}
-          <Typography variant="body1" component="p" sx={{ mb: 2, lineHeight: 1.45, fontSize: { xs: '1.05rem', md: '1.16rem' } }}>
-            {renderMarkdownBold(problem.question)}
-          </Typography>
-          {!problem.demoFirst && demoBlock}
-          <FreeResponseField
-            inputId={`fr-${problem.stepId}`}
-            value={draft}
-            onChange={setDraft}
-            onSubmit={onSubmitAnswer}
-            placeholder={answerPlaceholder(problem.acceptedAnswer)}
-            unit={problem.unit}
-            disabled={answered}
+          <PretrievalPrompt
+            prompt={problem.pretrieval?.prompt}
+            value={pretrievalDraft}
+            confirmed={pretrievalConfirmed}
+            onChange={setPretrievalDraft}
+            onConfirm={hasPretrieval ? () => setPretrievalConfirmed(true) : undefined}
           />
-          <HintList hints={problem.hints} revealed={questionView.revealedHints} />
-          <AnswerFeedback
-            state={feedbackState}
-            correctText={problem.explanation ?? ''}
-            incorrectText={problem.incorrectFeedback ?? 'Not quite. Use a hint and try again.'}
-            revealedAnswer={problem.acceptedAnswer}
-          />
-          {feedbackState === 'incorrect' && (
-            <FeedbackActionRow>
-              <WrongAnswerAssist
-                conceptId={lessonConcept}
-                prompt={problem.question}
-                learnerAnswer={selectedChoice ?? ''}
-                correctAnswer={problem.acceptedAnswer ?? ''}
-                answerKind="numeric"
-                context={problemAssistContext(problem)}
-                hints={problem.hints}
-                solverHint={problem.hints?.[problem.hints.length - 1]}
-                onStrongestHintUsed={onStrongestHintUsed}
+          {pretrievalGateOpen && (
+            <>
+              {problem.demoFirst && demoBlock}
+              <Typography variant="body1" component="p" sx={{ mb: 2, lineHeight: 1.45, fontSize: { xs: '1.05rem', md: '1.16rem' } }}>
+                {renderMarkdownBold(problem.question)}
+              </Typography>
+              {!problem.demoFirst && demoBlock}
+              <FreeResponseField
+                inputId={`fr-${problem.stepId}`}
+                value={draft}
+                onChange={setDraft}
+                onSubmit={onSubmitAnswer}
+                placeholder={answerPlaceholder(problem.acceptedAnswer)}
+                unit={problem.unit}
+                disabled={answered}
               />
-              {!answered && (
-                <RevealControls
-                  onRevealAnswer={onRevealAnswer}
-                  unsuccessfulAttempts={questionView.unsuccessfulAttempts}
-                  strongestHintUsed={questionView.strongestHintUsed}
-                />
+              <HintList hints={problem.hints} revealed={questionView.revealedHints} />
+              <AnswerFeedback
+                state={feedbackState}
+                correctText={problem.explanation ?? ''}
+                incorrectText={problem.incorrectFeedback ?? 'Not quite. Use a hint and try again.'}
+                revealedAnswer={problem.acceptedAnswer}
+              />
+              {feedbackState === 'incorrect' && (
+                <FeedbackActionRow>
+                  <WrongAnswerAssist
+                    conceptId={lessonConcept}
+                    prompt={problem.question}
+                    learnerAnswer={selectedChoice ?? ''}
+                    correctAnswer={problem.acceptedAnswer ?? ''}
+                    answerKind="numeric"
+                    context={problemAssistContext(problem)}
+                    hints={problem.hints}
+                    solverHint={problem.hints?.[problem.hints.length - 1]}
+                    onStrongestHintUsed={onStrongestHintUsed}
+                  />
+                  {!answered && (
+                    <RevealControls
+                      onRevealAnswer={onRevealAnswer}
+                      unsuccessfulAttempts={questionView.unsuccessfulAttempts}
+                      strongestHintUsed={questionView.strongestHintUsed}
+                    />
+                  )}
+                </FeedbackActionRow>
               )}
-            </FeedbackActionRow>
+            </>
           )}
-          {showQuestionAdvance && (
+          {pretrievalGateOpen && showQuestionAdvance && (
             <Button variant="contained" size="large" onClick={onAdvance} sx={{ mt: 2 }}>
               Continue
             </Button>
@@ -1405,6 +1536,8 @@ export function LessonStepRenderer({
   }
 
   if (format === 'slider') {
+    const hasPretrieval = Boolean(problem.pretrieval?.prompt) && !reviewMode;
+    const pretrievalGateOpen = !hasPretrieval || pretrievalConfirmed;
     const sliderMin = problem.sliderMin ?? 0;
     const sliderMax = problem.sliderMax ?? 6;
     const sliderStep = problem.sliderStep ?? 1;
@@ -1420,55 +1553,66 @@ export function LessonStepRenderer({
             {problem.title}
           </Typography>
           {problem.description && <StepDescription text={problem.description} />}
-          <Typography variant="body1" component="p" sx={{ mb: 2, lineHeight: 1.45, fontSize: { xs: '1.05rem', md: '1.16rem' } }}>
-            {renderMarkdownBold(problem.question)}
-          </Typography>
-          <Box sx={{ mb: 1 }}>
-            <ControlledSliderLab
-              demoType={demoType}
-              value={sliderValue}
-              onValueChange={(next) => setDraft(String(next))}
-              min={sliderMin}
-              max={sliderMax}
-              step={sliderStep}
-              disabled={answered}
-            />
-          </Box>
-          <Stack direction="row" sx={{ mt: 1.5 }}>
-            <Button variant="contained" onClick={() => onSubmitAnswer(String(sliderValue))} disabled={answered}>
-              Check answer
-            </Button>
-          </Stack>
-          <HintList hints={problem.hints} revealed={questionView.revealedHints} />
-          <AnswerFeedback
-            state={feedbackState}
-            correctText={problem.explanation ?? ''}
-            incorrectText={problem.incorrectFeedback ?? 'Not quite. Use a hint and try again.'}
-            revealedAnswer={problem.acceptedAnswer}
+          <PretrievalPrompt
+            prompt={problem.pretrieval?.prompt}
+            value={pretrievalDraft}
+            confirmed={pretrievalConfirmed}
+            onChange={setPretrievalDraft}
+            onConfirm={hasPretrieval ? () => setPretrievalConfirmed(true) : undefined}
           />
-          {feedbackState === 'incorrect' && (
-            <FeedbackActionRow>
-              <WrongAnswerAssist
-                conceptId={lessonConcept}
-                prompt={problem.question}
-                learnerAnswer={selectedChoice ?? ''}
-                correctAnswer={problem.acceptedAnswer ?? ''}
-                answerKind="numeric"
-                context={problemAssistContext(problem)}
-                hints={problem.hints}
-                solverHint={problem.hints?.[problem.hints.length - 1]}
-                onStrongestHintUsed={onStrongestHintUsed}
-              />
-              {!answered && (
-                <RevealControls
-                  onRevealAnswer={onRevealAnswer}
-                  unsuccessfulAttempts={questionView.unsuccessfulAttempts}
-                  strongestHintUsed={questionView.strongestHintUsed}
+          {pretrievalGateOpen && (
+            <>
+              <Typography variant="body1" component="p" sx={{ mb: 2, lineHeight: 1.45, fontSize: { xs: '1.05rem', md: '1.16rem' } }}>
+                {renderMarkdownBold(problem.question)}
+              </Typography>
+              <Box sx={{ mb: 1 }}>
+                <ControlledSliderLab
+                  demoType={demoType}
+                  value={sliderValue}
+                  onValueChange={(next) => setDraft(String(next))}
+                  min={sliderMin}
+                  max={sliderMax}
+                  step={sliderStep}
+                  disabled={answered}
                 />
+              </Box>
+              <Stack direction="row" sx={{ mt: 1.5 }}>
+                <Button variant="contained" onClick={() => onSubmitAnswer(String(sliderValue))} disabled={answered}>
+                  Check answer
+                </Button>
+              </Stack>
+              <HintList hints={problem.hints} revealed={questionView.revealedHints} />
+              <AnswerFeedback
+                state={feedbackState}
+                correctText={problem.explanation ?? ''}
+                incorrectText={problem.incorrectFeedback ?? 'Not quite. Use a hint and try again.'}
+                revealedAnswer={problem.acceptedAnswer}
+              />
+              {feedbackState === 'incorrect' && (
+                <FeedbackActionRow>
+                  <WrongAnswerAssist
+                    conceptId={lessonConcept}
+                    prompt={problem.question}
+                    learnerAnswer={selectedChoice ?? ''}
+                    correctAnswer={problem.acceptedAnswer ?? ''}
+                    answerKind="numeric"
+                    context={problemAssistContext(problem)}
+                    hints={problem.hints}
+                    solverHint={problem.hints?.[problem.hints.length - 1]}
+                    onStrongestHintUsed={onStrongestHintUsed}
+                  />
+                  {!answered && (
+                    <RevealControls
+                      onRevealAnswer={onRevealAnswer}
+                      unsuccessfulAttempts={questionView.unsuccessfulAttempts}
+                      strongestHintUsed={questionView.strongestHintUsed}
+                    />
+                  )}
+                </FeedbackActionRow>
               )}
-            </FeedbackActionRow>
+            </>
           )}
-          {showQuestionAdvance && (
+          {pretrievalGateOpen && showQuestionAdvance && (
             <Button variant="contained" size="large" onClick={onAdvance} sx={{ mt: 2 }}>
               Continue
             </Button>
@@ -1479,6 +1623,8 @@ export function LessonStepRenderer({
   }
 
   if (format === 'sort') {
+    const hasPretrieval = Boolean(problem.pretrieval?.prompt) && !reviewMode;
+    const pretrievalGateOpen = !hasPretrieval || pretrievalConfirmed;
     const items = problem.sortItems ?? [];
     const buckets = problem.sortBuckets ?? [];
     const placedCount = Object.keys(parseSortAnswer(draft)).length;
@@ -1497,52 +1643,63 @@ export function LessonStepRenderer({
             {problem.title}
           </Typography>
           {problem.description && <StepDescription text={problem.description} />}
-          {problem.demoFirst && demoBlock}
-          <Typography variant="body1" component="p" sx={{ mb: 2, lineHeight: 1.45, fontSize: { xs: '1.05rem', md: '1.16rem' } }}>
-            {renderMarkdownBold(problem.question)}
-          </Typography>
-          {!problem.demoFirst && demoBlock}
-          <SortInteraction
-            items={items}
-            buckets={buckets}
-            value={draft}
-            onChange={setDraft}
-            disabled={answered}
-            feedback={feedbackState === 'correct' ? 'correct' : feedbackState === 'incorrect' ? 'incorrect' : null}
+          <PretrievalPrompt
+            prompt={problem.pretrieval?.prompt}
+            value={pretrievalDraft}
+            confirmed={pretrievalConfirmed}
+            onChange={setPretrievalDraft}
+            onConfirm={hasPretrieval ? () => setPretrievalConfirmed(true) : undefined}
           />
-          <Stack direction="row" sx={{ mt: 2 }}>
-            <Button variant="contained" onClick={() => onSubmitAnswer(draft)} disabled={!allPlaced || answered}>
-              Check answer
-            </Button>
-          </Stack>
-          <HintList hints={problem.hints} revealed={questionView.revealedHints} />
-          <AnswerFeedback
-            state={feedbackState}
-            correctText={problem.explanation ?? ''}
-            incorrectText={problem.incorrectFeedback ?? 'Not quite. Re-check where each item belongs.'}
-          />
-          {feedbackState === 'incorrect' && (
-            <FeedbackActionRow>
-              <WrongAnswerAssist
-                conceptId={lessonConcept}
-                prompt={problem.question}
-                learnerAnswer={describeSortAnswer(submittedSortAnswer, items, buckets)}
-                correctAnswer={describeSortAnswer(correctSortAnswer, items, buckets)}
-                answerKind="sort"
-                context={problemAssistContext(problem)}
-                hints={problem.hints}
-                onStrongestHintUsed={onStrongestHintUsed}
+          {pretrievalGateOpen && (
+            <>
+              {problem.demoFirst && demoBlock}
+              <Typography variant="body1" component="p" sx={{ mb: 2, lineHeight: 1.45, fontSize: { xs: '1.05rem', md: '1.16rem' } }}>
+                {renderMarkdownBold(problem.question)}
+              </Typography>
+              {!problem.demoFirst && demoBlock}
+              <SortInteraction
+                items={items}
+                buckets={buckets}
+                value={draft}
+                onChange={setDraft}
+                disabled={answered}
+                feedback={feedbackState === 'correct' ? 'correct' : feedbackState === 'incorrect' ? 'incorrect' : null}
               />
-              {!answered && (
-                <RevealControls
-                  onRevealAnswer={onRevealAnswer}
-                  unsuccessfulAttempts={questionView.unsuccessfulAttempts}
-                  strongestHintUsed={questionView.strongestHintUsed}
-                />
+              <Stack direction="row" sx={{ mt: 2 }}>
+                <Button variant="contained" onClick={() => onSubmitAnswer(draft)} disabled={!allPlaced || answered}>
+                  Check answer
+                </Button>
+              </Stack>
+              <HintList hints={problem.hints} revealed={questionView.revealedHints} />
+              <AnswerFeedback
+                state={feedbackState}
+                correctText={problem.explanation ?? ''}
+                incorrectText={problem.incorrectFeedback ?? 'Not quite. Re-check where each item belongs.'}
+              />
+              {feedbackState === 'incorrect' && (
+                <FeedbackActionRow>
+                  <WrongAnswerAssist
+                    conceptId={lessonConcept}
+                    prompt={problem.question}
+                    learnerAnswer={describeSortAnswer(submittedSortAnswer, items, buckets)}
+                    correctAnswer={describeSortAnswer(correctSortAnswer, items, buckets)}
+                    answerKind="sort"
+                    context={problemAssistContext(problem)}
+                    hints={problem.hints}
+                    onStrongestHintUsed={onStrongestHintUsed}
+                  />
+                  {!answered && (
+                    <RevealControls
+                      onRevealAnswer={onRevealAnswer}
+                      unsuccessfulAttempts={questionView.unsuccessfulAttempts}
+                      strongestHintUsed={questionView.strongestHintUsed}
+                    />
+                  )}
+                </FeedbackActionRow>
               )}
-            </FeedbackActionRow>
+            </>
           )}
-          {showQuestionAdvance && (
+          {pretrievalGateOpen && showQuestionAdvance && (
             <Button variant="contained" size="large" onClick={onAdvance} sx={{ mt: 2 }}>
               Continue
             </Button>
@@ -1553,6 +1710,8 @@ export function LessonStepRenderer({
   }
 
   if (format === 'order') {
+    const hasPretrieval = Boolean(problem.pretrieval?.prompt) && !reviewMode;
+    const pretrievalGateOpen = !hasPretrieval || pretrievalConfirmed;
     const items = problem.orderItems ?? [];
     // The learner's current arrangement (held in the draft) is the answer. The
     // draft is seeded with a stable scramble (see initialDraftForStep), so it
@@ -1572,53 +1731,64 @@ export function LessonStepRenderer({
             {problem.title}
           </Typography>
           {problem.description && <StepDescription text={problem.description} />}
-          {problem.demoFirst && demoBlock}
-          <Typography variant="body1" component="p" sx={{ mb: 2, lineHeight: 1.45, fontSize: { xs: '1.05rem', md: '1.16rem' } }}>
-            {renderMarkdownBold(problem.question)}
-          </Typography>
-          {!problem.demoFirst && demoBlock}
-          <OrderInteraction
-            items={items}
-            value={draft}
-            onChange={setDraft}
-            startLabel={problem.orderStartLabel}
-            endLabel={problem.orderEndLabel}
-            disabled={answered}
-            feedback={feedbackState === 'correct' ? 'correct' : feedbackState === 'incorrect' ? 'incorrect' : null}
+          <PretrievalPrompt
+            prompt={problem.pretrieval?.prompt}
+            value={pretrievalDraft}
+            confirmed={pretrievalConfirmed}
+            onChange={setPretrievalDraft}
+            onConfirm={hasPretrieval ? () => setPretrievalConfirmed(true) : undefined}
           />
-          <Stack direction="row" sx={{ mt: 2 }}>
-            <Button variant="contained" onClick={() => onSubmitAnswer(effectiveOrder)} disabled={answered}>
-              Check answer
-            </Button>
-          </Stack>
-          <HintList hints={problem.hints} revealed={questionView.revealedHints} />
-          <AnswerFeedback
-            state={feedbackState}
-            correctText={problem.explanation ?? ''}
-            incorrectText={problem.incorrectFeedback ?? 'Not quite. Re-check the order.'}
-          />
-          {feedbackState === 'incorrect' && (
-            <FeedbackActionRow>
-              <WrongAnswerAssist
-                conceptId={lessonConcept}
-                prompt={problem.question}
-                learnerAnswer={describeOrderAnswer(submittedOrderAnswer, items)}
-                correctAnswer={describeOrderAnswer(correctOrderAnswer, items)}
-                answerKind="order"
-                context={problemAssistContext(problem)}
-                hints={problem.hints}
-                onStrongestHintUsed={onStrongestHintUsed}
+          {pretrievalGateOpen && (
+            <>
+              {problem.demoFirst && demoBlock}
+              <Typography variant="body1" component="p" sx={{ mb: 2, lineHeight: 1.45, fontSize: { xs: '1.05rem', md: '1.16rem' } }}>
+                {renderMarkdownBold(problem.question)}
+              </Typography>
+              {!problem.demoFirst && demoBlock}
+              <OrderInteraction
+                items={items}
+                value={draft}
+                onChange={setDraft}
+                startLabel={problem.orderStartLabel}
+                endLabel={problem.orderEndLabel}
+                disabled={answered}
+                feedback={feedbackState === 'correct' ? 'correct' : feedbackState === 'incorrect' ? 'incorrect' : null}
               />
-              {!answered && (
-                <RevealControls
-                  onRevealAnswer={onRevealAnswer}
-                  unsuccessfulAttempts={questionView.unsuccessfulAttempts}
-                  strongestHintUsed={questionView.strongestHintUsed}
-                />
+              <Stack direction="row" sx={{ mt: 2 }}>
+                <Button variant="contained" onClick={() => onSubmitAnswer(effectiveOrder)} disabled={answered}>
+                  Check answer
+                </Button>
+              </Stack>
+              <HintList hints={problem.hints} revealed={questionView.revealedHints} />
+              <AnswerFeedback
+                state={feedbackState}
+                correctText={problem.explanation ?? ''}
+                incorrectText={problem.incorrectFeedback ?? 'Not quite. Re-check the order.'}
+              />
+              {feedbackState === 'incorrect' && (
+                <FeedbackActionRow>
+                  <WrongAnswerAssist
+                    conceptId={lessonConcept}
+                    prompt={problem.question}
+                    learnerAnswer={describeOrderAnswer(submittedOrderAnswer, items)}
+                    correctAnswer={describeOrderAnswer(correctOrderAnswer, items)}
+                    answerKind="order"
+                    context={problemAssistContext(problem)}
+                    hints={problem.hints}
+                    onStrongestHintUsed={onStrongestHintUsed}
+                  />
+                  {!answered && (
+                    <RevealControls
+                      onRevealAnswer={onRevealAnswer}
+                      unsuccessfulAttempts={questionView.unsuccessfulAttempts}
+                      strongestHintUsed={questionView.strongestHintUsed}
+                    />
+                  )}
+                </FeedbackActionRow>
               )}
-            </FeedbackActionRow>
+            </>
           )}
-          {showQuestionAdvance && (
+          {pretrievalGateOpen && showQuestionAdvance && (
             <Button variant="contained" size="large" onClick={onAdvance} sx={{ mt: 2 }}>
               Continue
             </Button>
@@ -1629,6 +1799,8 @@ export function LessonStepRenderer({
   }
 
   // Multiple-choice (default).
+  const hasPretrieval = Boolean(problem.pretrieval?.prompt) && !reviewMode;
+  const pretrievalGateOpen = !hasPretrieval || pretrievalConfirmed;
   const mcChoices = problem.choices ?? [];
   const mcLearnerLabel = mcChoices.find((choice) => choice.value === selectedChoice)?.label ?? selectedChoice ?? '';
   const mcCorrectLabel = mcChoices.find((choice) => choice.value === problem.answer)?.label ?? problem.answer ?? '';
@@ -1644,48 +1816,59 @@ export function LessonStepRenderer({
           {problem.title}
         </Typography>
         {problem.description && <StepDescription text={problem.description} />}
-        {problem.demoFirst && mcDemoBlock}
-        <Typography variant="body1" component="p" sx={{ mb: 2.5, lineHeight: 1.45, fontSize: { xs: '1.05rem', md: '1.16rem' } }}>
-          {renderMarkdownBold(problem.question)}
-        </Typography>
-        {!problem.demoFirst && mcDemoBlock}
-        <ChoiceList
-          choices={mcChoices}
-          draft={draft}
-          onDraftChange={setDraft}
-          selectedChoice={selectedChoice}
-          feedbackState={feedbackState}
-          explanation={problem.explanation}
-          incorrectFeedback={problem.incorrectFeedback}
-          onSubmit={onSubmitAnswer}
+        <PretrievalPrompt
+          prompt={problem.pretrieval?.prompt}
+          value={pretrievalDraft}
+          confirmed={pretrievalConfirmed}
+          onChange={setPretrievalDraft}
+          onConfirm={hasPretrieval ? () => setPretrievalConfirmed(true) : undefined}
         />
-        {feedbackState === 'incorrect' && (
-          <FeedbackActionRow>
-            <WrongAnswerAssist
-              conceptId={lessonConcept}
-              prompt={problem.question}
-              learnerAnswer={mcLearnerLabel}
-              correctAnswer={mcCorrectLabel}
-              answerKind="choice"
+        {pretrievalGateOpen && (
+          <>
+            {problem.demoFirst && mcDemoBlock}
+            <Typography variant="body1" component="p" sx={{ mb: 2.5, lineHeight: 1.45, fontSize: { xs: '1.05rem', md: '1.16rem' } }}>
+              {renderMarkdownBold(problem.question)}
+            </Typography>
+            {!problem.demoFirst && mcDemoBlock}
+            <ChoiceList
               choices={mcChoices}
-              selectedChoiceContext={mcChoices.find((choice) => choice.value === selectedChoice)}
-              correctChoiceContext={mcChoices.find((choice) => choice.value === problem.answer)}
-              incorrectFeedback={problem.incorrectFeedback}
+              draft={draft}
+              onDraftChange={setDraft}
+              selectedChoice={selectedChoice}
+              feedbackState={feedbackState}
               explanation={problem.explanation}
-              context={problemAssistContext(problem)}
-              hints={problem.hints}
-              onStrongestHintUsed={onStrongestHintUsed}
+              incorrectFeedback={problem.incorrectFeedback}
+              onSubmit={onSubmitAnswer}
             />
-            {!answered && (
-              <RevealControls
-                onRevealAnswer={onRevealAnswer}
-                unsuccessfulAttempts={questionView.unsuccessfulAttempts}
-                strongestHintUsed={questionView.strongestHintUsed}
-              />
+            {feedbackState === 'incorrect' && (
+              <FeedbackActionRow>
+                <WrongAnswerAssist
+                  conceptId={lessonConcept}
+                  prompt={problem.question}
+                  learnerAnswer={mcLearnerLabel}
+                  correctAnswer={mcCorrectLabel}
+                  answerKind="choice"
+                  choices={mcChoices}
+                  selectedChoiceContext={mcChoices.find((choice) => choice.value === selectedChoice)}
+                  correctChoiceContext={mcChoices.find((choice) => choice.value === problem.answer)}
+                  incorrectFeedback={problem.incorrectFeedback}
+                  explanation={problem.explanation}
+                  context={problemAssistContext(problem)}
+                  hints={problem.hints}
+                  onStrongestHintUsed={onStrongestHintUsed}
+                />
+                {!answered && (
+                  <RevealControls
+                    onRevealAnswer={onRevealAnswer}
+                    unsuccessfulAttempts={questionView.unsuccessfulAttempts}
+                    strongestHintUsed={questionView.strongestHintUsed}
+                  />
+                )}
+              </FeedbackActionRow>
             )}
-          </FeedbackActionRow>
+          </>
         )}
-        {showQuestionAdvance && (
+        {pretrievalGateOpen && showQuestionAdvance && (
           <Button variant="contained" size="large" onClick={onAdvance} sx={{ mt: 2 }}>
             Continue
           </Button>
