@@ -21,15 +21,29 @@ All grading logic is custom-built and deterministic with no AI dependency. The a
 
 AI is used only for prose and scenario variation. The model never supplies the authoritative answer key; generated problems are validated against the deterministic solver, and every AI feature falls back safely when the endpoint is disabled, slow, or unavailable.
 
+## Design Decisions
+
+Brilliant Probability is intentionally course-first. The default path starts with lessons, not profile settings or a chatbot, because learners need a guided sequence before adaptive practice has enough signal to be useful. Profile, mastery, practice, and review are supporting surfaces that route learners back into the course loop.
+
+The lessons favor concrete experiments before formulas. Coin flips, wheels, sortable outcomes, sliders, and direct-manipulation labs make probability visible before naming the rule. This keeps the product from becoming a worksheet app where learners only type fractions.
+
+Practice is gated by completed lessons so generated questions never appear before the app has taught the underlying idea. The final exam is gated behind the full course path for the same reason: it should feel like a capstone, not a shortcut around the lessons.
+
+Mastery is a soft signal, not a hard wall. The app uses `Needs practice`, `Proficient`, and `Mastered` to guide review and exam readiness without blocking forward movement for learners who are still building confidence.
+
+AI is deliberately narrow. The app ships adaptive problem wording, answer-aware hints, wrong-answer explanations, alternate explanations, and recap support, but skips a general chatbot. The design goal is targeted tutoring inside structured lesson state, not an open-ended assistant that can drift away from the course.
+
+Generated practice separates variety from correctness. AI can make scenarios feel less repetitive, but deterministic TypeScript solvers own the accepted answer, tolerance, and worked steps. This keeps the MVP useful with AI disabled and avoids trusting a language model with checkable math.
+
 ## Phase 3 Learning Design
 
 Phase 3 adds a review layer on top of the course instead of changing the main lesson path. It uses short practice signals so learners can see why a session is recommended and what changed afterward.
 
-- **Pretrieval and retrieval:** practice problems ask learners to try the method, count, or rule before computation. Probability depends on choosing the right setup, so an early guess makes the later calculation stick.
-- **Spaced review:** concepts with misses or little practice come back sooner, while accurate concepts return after a delay. That fits probability because small differences between "and", "or", "not", and "given" fade quickly without refreshers.
-- **Interleaving:** mixed sessions rotate selected topics instead of blocking one concept at a time. Probability transfer improves when learners must decide which idea applies before calculating.
+- **Pretrieval and retrieval:** key lesson moments require a typed prediction before the main content unlocks, while early practice levels offer an optional `Try first` planning step. Probability depends on choosing the right setup, so an early guess makes the later calculation stick.
+- **Spaced review:** concepts with misses, low readiness, or little practice come back sooner, while accurate concepts return after a delay. The profile page surfaces suggested review topics and `Review weak spots` opens targeted practice instead of generic practice.
+- **Interleaving:** mixed sessions rotate selected topics instead of blocking one concept at a time. During multi-topic practice, the active problem hides the concept label so learners must decide which probability idea applies before calculating.
 - **Soft mastery:** labels stay diagnostic (`Needs practice`, `Proficient`, `Mastered`) and do not hard-lock the next lesson. The app treats mastery as a signal for review and exam readiness, not a punishment.
-- **Scaffolding fade:** lower practice levels include cues like what to count first; higher levels ask learners to choose the approach with less support. This keeps difficulty desirable without only making the numbers larger.
+- **Scaffolding fade:** lower practice levels include concrete planning prompts, middle levels ask learners to choose the method with less support, and higher levels remove the `Try first` prompt entirely. This keeps difficulty desirable without only making the numbers larger.
 - **Immediate feedback:** deterministic grading gives fast correctness checks, with worked solutions and optional AI explanations after the learner answers. That keeps feedback specific while preserving the learner's first-try retrieval signal.
 
 ## Tech Stack
